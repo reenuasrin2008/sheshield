@@ -117,7 +117,7 @@ export function FakeCallModal({ isOpen, onClose, currentLang }: FakeCallModalPro
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
       {/* SCREEN 1: INCOMING CALL (REALISTIC FULL SCREEN PHONE SIMULATION) */}
       {isRinging ? (
-        <div className="w-full max-w-sm h-[560px] bg-gradient-to-b from-slate-900 via-slate-800 to-black text-white rounded-3xl p-6 flex flex-col justify-between items-center shadow-2xl border border-white/10 animate-in zoom-in-95">
+        <div className="w-full max-w-sm h-[500px] sm:h-[560px] max-h-[92vh] bg-gradient-to-b from-slate-900 via-slate-800 to-black text-white rounded-3xl p-5 sm:p-6 flex flex-col justify-between items-center shadow-2xl border border-white/10 animate-in zoom-in-95">
           <div className="text-center space-y-3 pt-8">
             <span className="text-xs uppercase tracking-widest text-white/60 font-medium">
               {t.fake_call_incoming}
@@ -154,7 +154,7 @@ export function FakeCallModal({ isOpen, onClose, currentLang }: FakeCallModalPro
         </div>
       ) : isCallActive ? (
         /* SCREEN 2: ACTIVE CONNECTED CALL */
-        <div className="w-full max-w-sm h-[560px] bg-gradient-to-b from-slate-900 via-slate-800 to-black text-white rounded-3xl p-6 flex flex-col justify-between items-center shadow-2xl border border-white/10 animate-in zoom-in-95">
+        <div className="w-full max-w-sm h-[500px] sm:h-[560px] max-h-[92vh] bg-gradient-to-b from-slate-900 via-slate-800 to-black text-white rounded-3xl p-5 sm:p-6 flex flex-col justify-between items-center shadow-2xl border border-white/10 animate-in zoom-in-95">
           <div className="text-center space-y-3 pt-8">
             <h3 className="text-2xl font-bold text-white">{callerName}</h3>
             <p className="text-sm font-mono text-emerald-400">{formatCallTime(callDuration)}</p>
@@ -177,7 +177,7 @@ export function FakeCallModal({ isOpen, onClose, currentLang }: FakeCallModalPro
         </div>
       ) : (
         /* SCREEN 3: SETUP & TRIGGER SIMULATION */
-        <div className="w-full max-w-md bg-background rounded-3xl border border-border p-6 sm:p-7 shadow-2xl text-foreground space-y-6">
+        <div className="w-full max-w-md max-h-[92vh] overflow-y-auto bg-background rounded-3xl border border-border p-5 sm:p-7 shadow-2xl text-foreground space-y-5">
           <div className="flex items-start justify-between">
             <div>
               <h3 className="text-lg font-bold">{t.fake_call_title}</h3>

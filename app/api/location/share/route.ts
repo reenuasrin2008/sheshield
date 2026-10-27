@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import crypto from "crypto";
+import {
+  registerActiveSession,
+  getSessionByToken,
+  endSession
+} from "@/lib/services/active-tracking-store";
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,13 +20,14 @@ export async function POST(req: NextRequest) {
 
     if (action === "start") {
       const shareToken = crypto.randomBytes(16).toString("hex");
+      const startedAt = new Date().toISOString();
       const expiresAt = new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
 
-      let createdSessionId = `sess_${Date.now()}`;
+      let createdSessionId = `sess_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
       try {
         if (user) {
-          const { data: inserted, error } = await supabase
+          const { data: inserted } = await supabase
             .from("location_sharing_sessions")
             .insert({
               user_id: userId,
@@ -37,8 +43,20 @@ export async function POST(req: NextRequest) {
           if (inserted?.id) createdSessionId = inserted.id;
         }
       } catch (err) {
-        console.warn("DB session creation warning:", err);
+        console.warn("Supabase session insert note:", err);
       }
+
+      // Register in active tracking store
+      registerActiveSession({
+        id: createdSessionId,
+        userId,
+        shareToken,
+        title,
+        status: "active",
+        startedAt,
+        expiresAt,
+        isEmergency: !!isEmergency
+      });
 
       return NextResponse.json({
         success: true,
@@ -50,18 +68,22 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "stop") {
-      if (sessionId && user) {
-        try {
-          await supabase
-            .from("location_sharing_sessions")
-            .update({
-              status: "ended",
-              ended_at: new Date().toISOString()
-            })
-            .eq("id", sessionId)
-            .eq("user_id", userId);
-        } catch (err) {
-          console.warn("DB session stop warning:", err);
+      if (sessionId) {
+        endSession(sessionId);
+
+        if (user) {
+          try {
+            await supabase
+              .from("location_sharing_sessions")
+              .update({
+                status: "ended",
+                ended_at: new Date().toISOString()
+              })
+              .eq("id", sessionId)
+              .eq("user_id", userId);
+          } catch (err) {
+            console.warn("DB session stop warning:", err);
+          }
         }
       }
 
@@ -84,27 +106,48 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // 1. Check in-memory active tracking store
+    const inMemorySession = getSessionByToken(token);
+    if (inMemorySession) {
+      if (inMemorySession.status !== "active") {
+        return NextResponse.json(
+          { error: "This live tracking session has ended or been revoked." },
+          { status: 410 }
+        );
+      }
+      return NextResponse.json({
+        session: {
+          id: inMemorySession.id,
+          title: inMemorySession.title,
+          status: inMemorySession.status,
+          started_at: inMemorySession.startedAt,
+          expires_at: inMemorySession.expiresAt,
+          is_emergency: inMemorySession.isEmergency,
+          user_id: inMemorySession.userId
+        },
+        latestLocation: inMemorySession.latestLocation || null,
+        locationHistory: inMemorySession.locationHistory || []
+      });
+    }
+
+    // 2. Query Supabase
     const supabase = await createClient();
-    const { data: session, error } = await supabase
+    const { data: session } = await supabase
       .from("location_sharing_sessions")
       .select("id, title, status, started_at, expires_at, is_emergency, user_id")
       .eq("share_token", token)
       .single();
 
-    if (error || !session) {
-      // Mock session for testing or demo tokens
-      return NextResponse.json({
-        id: "demo_session",
-        title: "SheShield Live Journey",
-        status: "active",
-        expires_at: new Date(Date.now() + 3600000).toISOString(),
-        is_emergency: false
-      });
+    if (!session) {
+      return NextResponse.json(
+        { error: "Live tracking session not found or link has expired." },
+        { status: 404 }
+      );
     }
 
     if (session.status !== "active" || new Date(session.expires_at) < new Date()) {
       return NextResponse.json(
-        { error: "This live tracking session has expired or ended" },
+        { error: "This live tracking session has expired or ended." },
         { status: 410 }
       );
     }

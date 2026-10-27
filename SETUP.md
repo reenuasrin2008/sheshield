@@ -14,6 +14,12 @@ The application expects the following configuration:
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
 
+# Google Maps Platform (Integrated with Dual-Engine Fallback)
+NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=AIzaSy...your-key
+
+# Google Gemini AI Integration (with contextual offline fallback)
+GEMINI_API_KEY=AIzaSy...your-key
+
 # Optional: Map & Routing Overrides (Defaults to open Carto & OSRM)
 NEXT_PUBLIC_MAP_STYLE_URL=https://basemaps.cartocdn.com/gl/positron-gl-style/style.json
 # ROUTING_PROVIDER=osrm (default) or mapbox
@@ -23,10 +29,6 @@ NEXT_PUBLIC_MAP_STYLE_URL=https://basemaps.cartocdn.com/gl/positron-gl-style/sty
 # SMS_PROVIDER=test (default) or msg91 or twilio
 # SMS_API_KEY=your_sms_key
 # SMS_SENDER_ID=SHESHLD
-
-# Optional: Server-side LLM Provider (Defaults to local RAG fallback)
-# LLM_PROVIDER=openai or groq or anthropic
-# LLM_API_KEY=your_llm_key
 ```
 
 ---

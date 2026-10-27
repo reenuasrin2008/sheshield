@@ -1,9 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
-import { MessageSquare, Send, Sparkles, Shield, X, Bot, User } from "lucide-react";
+import React, { useState, useRef, useEffect } from "react";
+import { Send, Bot, X, Loader2, AlertCircle, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 import { SupportedLanguage } from "@/types/sheshield";
-import { getTranslation } from "@/lib/i18n/translations";
 
 interface SafetyAssistantProps {
   currentLang: SupportedLanguage;
@@ -15,7 +14,10 @@ interface ChatMessage {
   id: string;
   sender: "bot" | "user";
   text: string;
-  action?: "open_sos" | "open_fake_call";
+  suggestedAction?: "open_sos" | "open_fake_call" | "view_map" | "call_112" | "call_1091";
+  provider?: "gemini" | "sheshield_safety_engine";
+  metaNote?: string;
+  failed?: boolean;
 }
 
 export function SafetyAssistant({
@@ -24,119 +26,161 @@ export function SafetyAssistant({
   onOpenFakeCall
 }: SafetyAssistantProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [inputText, setInputText] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  const initialBotGreeting: Record<SupportedLanguage, string> = {
+    en: "Hello! I am your SheShield AI Guardian. Ask me anything about situational safety, how to activate/cancel SOS, safe transit routes, or your legal rights under Indian law.",
+    ta: "வணக்கம்! நான் உங்கள் ஷிஷீல்ட் AI பாதுகாவலன். அவசர SOS பாதுகாப்பு, பாதுகாப்பான வழித்தடங்கள் அல்லது இந்திய சட்ட உரிமைகள் (Zero FIR, POSH) குறித்து என்னிடம் கேட்கலாம்.",
+    hi: "नमस्ते! मैं आपका शीशील्ड एआई साथी हूँ। आप आपातकालीन सुरक्षा, सुरक्षित मार्ग या भारतीय कानूनी अधिकारों (जीरो एफआईआर, घरेलू हिंसा) के बारे में पूछ सकते हैं।"
+  };
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
-      id: "m_1",
+      id: "greeting",
       sender: "bot",
-      text:
-        currentLang === "ta"
-          ? "வணக்கம்! நான் உங்கள் ஷிஷீல்ட் AI பாதுகாவலன். அவசர உதவி, பாதுகாப்பான வழித்தடம் அல்லது சட்ட வழிகாட்டுதல் குறித்து என்னிடம் கேட்கலாம்."
-          : currentLang === "hi"
-          ? "नमस्ते! मैं आपका शीशील्ड एआई साथी हूँ। आप आपातकालीन सुरक्षा, सुरक्षित मार्ग या कानूनी अधिकारों के बारे में पूछ सकते हैं।"
-          : "Hello! I am your SheShield AI Guardian. Ask me about emergency SOS protocols, safe route analysis, or your legal rights."
+      text: initialBotGreeting[currentLang] || initialBotGreeting.en,
+      provider: "sheshield_safety_engine"
     }
   ]);
-  const [inputText, setInputText] = useState("");
 
-  const t = getTranslation(currentLang);
+  // Update greeting when language changes if only greeting is present
+  useEffect(() => {
+    setMessages(prev => {
+      if (prev.length === 1 && prev[0].id === "greeting") {
+        return [
+          {
+            id: "greeting",
+            sender: "bot",
+            text: initialBotGreeting[currentLang] || initialBotGreeting.en,
+            provider: "sheshield_safety_engine"
+          }
+        ];
+      }
+      return prev;
+    });
+  }, [currentLang]);
 
-  const handleSend = () => {
-    if (!inputText.trim()) return;
+  // Scroll to bottom when messages update
+  useEffect(() => {
+    if (isOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, isOpen]);
+
+  const sendMessage = async (userText?: string) => {
+    const textToSend = (userText || inputText).trim();
+    if (!textToSend || isLoading) return;
 
     const userMsg: ChatMessage = {
-      id: `msg_${Date.now()}`,
+      id: `user_${Date.now()}`,
       sender: "user",
-      text: inputText.trim()
+      text: textToSend
     };
 
-    setMessages(prev => [...prev, userMsg]);
-    const lower = inputText.toLowerCase();
+    const nextHistory = [...messages, userMsg];
+    setMessages(nextHistory);
     setInputText("");
+    setIsLoading(true);
 
-    // Context-aware safety heuristics
-    setTimeout(() => {
-      let reply = "";
-      let action: "open_sos" | "open_fake_call" | undefined = undefined;
+    try {
+      // Build API history
+      const formattedHistory = messages
+        .filter(m => !m.failed)
+        .slice(-6)
+        .map(m => ({
+          role: m.sender === "user" ? ("user" as const) : ("model" as const),
+          text: m.text
+        }));
 
-      if (lower.includes("sos") || lower.includes("emergency") || lower.includes("danger") || lower.includes("help") || lower.includes("ஆபத்து") || lower.includes("खतरा")) {
-        reply =
-          currentLang === "ta"
-            ? "அவசர எச்சரிக்கையைத் தொடங்க, மேலே உள்ள சிவப்பு SOS பட்டனை 2 வினாடிகள் அழுத்திப் பிடிக்கவும். அல்லது நேரடியாக 112 அல்லது 1091 அழைக்கலாம்."
-            : currentLang === "hi"
-            ? "आपातकालीन स्थिति में ऊपर लाल SOS बटन को 2 सेकंड तक दबाए रखें या 112/1091 पर कॉल करें।"
-            : "To trigger immediate SOS, press and hold the red SOS button for 2 seconds. You can also dial Emergency 112 or Women Helpline 1091 immediately.";
-        action = "open_sos";
-      } else if (lower.includes("fake call") || lower.includes("escape") || lower.includes("uncomfortable") || lower.includes("அழைப்பு") || lower.includes("कॉल")) {
-        reply =
-          currentLang === "ta"
-            ? "சங்கடமான சூழ்நிலைகளில் இருந்து பாதுகாப்பாக வெளியேற 'போலி அழைப்பு' சிமுலேஷனை பயன்படுத்தலாம்."
-            : currentLang === "hi"
-            ? "असहज स्थिति से सुरक्षित रूप से निकलने के लिए आप 'फेक कॉल' सिमुलेशन का उपयोग कर सकते हैं।"
-            : "You can trigger a realistic simulated incoming call right now to give yourself an excuse to exit comfortably.";
-        action = "open_fake_call";
-      } else if (lower.includes("route") || lower.includes("map") || lower.includes("walk") || lower.includes("வழி") || lower.includes("मार्ग")) {
-        reply =
-          currentLang === "ta"
-            ? "பாதுகாப்பான வரைபடத்தில் உங்கள் இலக்கைத் தேடுங்கள். அது 24/7 காவல் நிலையங்கள் மற்றும் வெளிச்சமுள்ள பாதைகளின் அடிப்படையில் வழிகாட்டும்."
-            : currentLang === "hi"
-            ? "लाइव मैप पर अपना गंतव्य खोजें। हमारा सिस्टम 24/7 सहायता केंद्रों के आधार पर सुरक्षित मार्ग की गणना करता है।"
-            : "Search your destination on the Live Safety Map above. The route engine calculates real walking distances and factors nearby 24/7 police stations and hospitals.";
-      } else {
-        reply =
-          currentLang === "ta"
-            ? "நான் உங்கள் பாதுகாப்பிற்கு உதவ தயாராக உள்ளேன். அவசர உதவி (SOS), போலி அழைப்பு அல்லது சட்ட விழிப்புணர்வு குறித்து கேட்கலாம்."
-            : currentLang === "hi"
-            ? "मैं आपकी सहायता के लिए तैयार हूँ। आपातकालीन अलर्ट, सुरक्षित मार्ग या कानूनी अधिकारों के बारे में पूछें।"
-            : "I am here to guide your safety. You can ask about emergency contacts, initiating live journey sharing, or exploring government women empowerment schemes.";
+      const res = await fetch("/api/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: textToSend,
+          history: formattedHistory,
+          lang: currentLang
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}`);
       }
 
-      setMessages(prev => [
-        ...prev,
-        {
-          id: `bot_${Date.now()}`,
-          sender: "bot",
-          text: reply,
-          action
-        }
-      ]);
-    }, 400);
+      const data = await res.json();
+
+      const botMsg: ChatMessage = {
+        id: `bot_${Date.now()}`,
+        sender: "bot",
+        text: data.reply || "I am available to assist your personal safety.",
+        suggestedAction: data.suggestedAction,
+        provider: data.provider,
+        metaNote: data.meta?.geminiStatus
+      };
+
+      setMessages(prev => [...prev, botMsg]);
+    } catch (err: any) {
+      console.warn("Safety assistant fetch error:", err);
+      const failedMsg: ChatMessage = {
+        id: `err_${Date.now()}`,
+        sender: "bot",
+        text:
+          currentLang === "ta"
+            ? "இணைப்பு பிழை ஏற்பட்டது. தயவுசெய்து மீண்டும் முயற்சிக்கவும் அல்லது அவசர உதவிக்கு 112 அழைக்கவும்."
+            : currentLang === "hi"
+            ? "कनेक्शन में समस्या आई। कृपया पुनः प्रयास करें या आपातकालीन सहायता के लिए 112 डायल करें।"
+            : "Network connection error. Please tap retry or call Emergency 112 directly if in immediate danger.",
+        failed: true
+      };
+      setMessages(prev => [...prev, failedMsg]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
-    <div className="fixed bottom-6 right-6 z-40">
+    <div className="fixed bottom-4 right-3 sm:bottom-6 sm:right-6 z-40">
       {/* Floating Toggle Button */}
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="p-3.5 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-xl shadow-purple-600/30 hover:scale-105 active:scale-95 transition-all flex items-center gap-2 font-bold text-xs"
+          className="p-3 sm:p-3.5 rounded-full bg-gradient-to-r from-purple-600 via-indigo-600 to-rose-600 hover:from-purple-500 hover:to-rose-500 text-white shadow-xl shadow-purple-600/30 hover:scale-105 active:scale-95 transition-all flex items-center gap-2 font-bold text-xs"
+          aria-label="Open AI Safety Assistant"
         >
-          <Bot className="w-5 h-5" />
+          <Bot className="w-5 h-5 shrink-0" />
           <span className="hidden sm:inline">AI Safety Assistant</span>
         </button>
       )}
 
       {/* Floating Chat Drawer */}
       {isOpen && (
-        <div className="w-80 sm:w-96 h-[460px] bg-background rounded-3xl border border-border shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95">
+        <div className="w-[calc(100vw-24px)] max-w-sm sm:w-96 h-[460px] max-h-[85vh] bg-background rounded-3xl border border-border shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95">
           {/* Header */}
-          <div className="p-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Bot className="w-5 h-5" />
+          <div className="p-3.5 sm:p-4 bg-gradient-to-r from-purple-700 via-indigo-700 to-rose-700 text-white flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                <Bot className="w-4 h-4 text-white" />
+              </div>
               <div>
-                <p className="font-bold text-xs sm:text-sm">SheShield AI Guardian</p>
-                <p className="text-[10px] text-white/80">Active Protective Companion</p>
+                <p className="font-bold text-xs sm:text-sm flex items-center gap-1.5">
+                  <span>SheShield AI Guardian</span>
+                  <Sparkles className="w-3 h-3 text-amber-300" />
+                </p>
+                <p className="text-[10px] text-white/80">Active Protective Guidance</p>
               </div>
             </div>
             <button
               onClick={() => setIsOpen(false)}
-              className="p-1 rounded-full hover:bg-white/10"
+              className="p-1.5 rounded-full hover:bg-white/10 text-white/90"
+              aria-label="Close Assistant"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
           {/* Messages Container */}
-          <div className="flex-1 p-4 overflow-y-auto space-y-3 text-xs">
+          <div className="flex-1 p-3.5 overflow-y-auto space-y-3 text-xs">
             {messages.map(msg => (
               <div
                 key={msg.id}
@@ -148,47 +192,124 @@ export function SafetyAssistant({
                   </div>
                 )}
                 <div
-                  className={`p-3 rounded-2xl max-w-[80%] leading-relaxed ${
+                  className={`p-3 rounded-2xl max-w-[85%] leading-relaxed ${
                     msg.sender === "user"
                       ? "bg-purple-600 text-white rounded-tr-none"
+                      : msg.failed
+                      ? "bg-red-500/10 border border-red-500/30 text-red-600 rounded-tl-none"
                       : "bg-muted text-foreground rounded-tl-none border border-border/60"
                   }`}
                 >
-                  <p>{msg.text}</p>
-                  {msg.action === "open_sos" && (
+                  <p className="whitespace-pre-line">{msg.text}</p>
+
+                  {/* Diagnostic provider attribution note */}
+                  {msg.metaNote && (
+                    <p className="mt-1.5 text-[9px] text-muted-foreground/80 italic border-t border-border/40 pt-1">
+                      {msg.metaNote}
+                    </p>
+                  )}
+
+                  {/* Interactive Action Buttons */}
+                  {msg.suggestedAction === "open_sos" && (
                     <button
-                      onClick={onOpenSOSModal}
-                      className="mt-2 block w-full py-1.5 px-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-[10px] text-center"
+                      onClick={() => {
+                        setIsOpen(false);
+                        onOpenSOSModal();
+                      }}
+                      className="mt-2.5 block w-full py-2 px-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-[11px] text-center shadow-md active:scale-95 transition-all"
                     >
                       Open Emergency SOS
                     </button>
                   )}
-                  {msg.action === "open_fake_call" && (
+                  {msg.suggestedAction === "open_fake_call" && (
                     <button
-                      onClick={onOpenFakeCall}
-                      className="mt-2 block w-full py-1.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[10px] text-center"
+                      onClick={() => {
+                        setIsOpen(false);
+                        onOpenFakeCall();
+                      }}
+                      className="mt-2.5 block w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-[11px] text-center shadow-md active:scale-95 transition-all"
                     >
                       Trigger Simulated Call
+                    </button>
+                  )}
+                  {msg.suggestedAction === "view_map" && (
+                    <a
+                      href="#map-section"
+                      onClick={() => setIsOpen(false)}
+                      className="mt-2.5 block w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-[11px] text-center shadow-md active:scale-95 transition-all"
+                    >
+                      View Live Safety Map
+                    </a>
+                  )}
+
+                  {msg.failed && (
+                    <button
+                      onClick={() => {
+                        const lastUser = [...messages].reverse().find(m => m.sender === "user");
+                        if (lastUser) sendMessage(lastUser.text);
+                      }}
+                      className="mt-2 flex items-center gap-1 text-[11px] font-semibold text-red-600 underline"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Retry question</span>
                     </button>
                   )}
                 </div>
               </div>
             ))}
+
+            {isLoading && (
+              <div className="flex gap-2 justify-start items-center text-muted-foreground text-xs py-1">
+                <div className="w-6 h-6 rounded-full bg-purple-500/10 text-purple-600 flex items-center justify-center shrink-0">
+                  <Bot className="w-3.5 h-3.5" />
+                </div>
+                <div className="p-2.5 rounded-2xl bg-muted border border-border/50 flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-600" />
+                  <span className="text-[11px]">AI Guardian thinking...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Quick Prompts Bar */}
+          <div className="px-3 py-1.5 bg-muted/40 border-t border-border/40 flex gap-1.5 overflow-x-auto no-scrollbar text-[10px]">
+            <button
+              onClick={() => sendMessage("I am being followed, what should I do?")}
+              className="whitespace-nowrap px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-muted text-foreground"
+            >
+              Being followed
+            </button>
+            <button
+              onClick={() => sendMessage("What is Zero FIR and my right to file it?")}
+              className="whitespace-nowrap px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-muted text-foreground"
+            >
+              Zero FIR rights
+            </button>
+            <button
+              onClick={() => sendMessage("How do I trigger fake call?")}
+              className="whitespace-nowrap px-2.5 py-1 rounded-lg bg-background border border-border hover:bg-muted text-foreground"
+            >
+              Fake Call guide
+            </button>
           </div>
 
           {/* Input Bar */}
-          <div className="p-3 border-t border-border flex items-center gap-2 bg-muted/30">
+          <div className="p-2.5 border-t border-border flex items-center gap-2 bg-background">
             <input
               type="text"
-              placeholder="Ask safety assistant..."
+              placeholder="Ask safety or legal questions..."
               value={inputText}
               onChange={e => setInputText(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleSend()}
-              className="flex-1 bg-background border border-border rounded-xl px-3 py-2 text-xs outline-none focus:border-purple-500"
+              onKeyDown={e => e.key === "Enter" && sendMessage()}
+              disabled={isLoading}
+              className="flex-1 bg-muted/60 border border-border rounded-xl px-3 py-2 text-xs outline-none focus:border-purple-500 disabled:opacity-50"
             />
             <button
-              onClick={handleSend}
-              className="p-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white transition-colors"
+              onClick={() => sendMessage()}
+              disabled={isLoading || !inputText.trim()}
+              className="p-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 disabled:opacity-40 text-white transition-colors shrink-0"
+              aria-label="Send Message"
             >
               <Send className="w-3.5 h-3.5" />
             </button>

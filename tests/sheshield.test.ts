@@ -5,6 +5,14 @@ import { evaluateRouteSafety } from "../lib/services/risk-engine";
 import { searchLegalCorpus } from "../lib/services/legal-corpus";
 import { sendEmergencySMS } from "../lib/services/sms-provider";
 import { SafetyReport, AssistanceResource } from "../types/sheshield";
+import { generateContextualSafetyResponse } from "../lib/services/safety-ai";
+import {
+  registerActiveSession,
+  updateSessionLocation,
+  getSessionByToken,
+  getSessionById,
+  endSession
+} from "../lib/services/active-tracking-store";
 
 describe("SheShield Core Systems Test Suite", () => {
   describe("Geospatial & Haversine Engine", () => {
@@ -153,4 +161,115 @@ describe("SheShield Core Systems Test Suite", () => {
       assert.strictEqual(result.deliveryLog[0].status, "simulated");
     });
   });
+
+  describe("Contextual Safety AI Engine", () => {
+    it("detects emergency/distress intent and suggests SOS trigger in English", () => {
+      const response = generateContextualSafetyResponse("I am being followed, please help me", [], "en");
+      assert.strictEqual(response.suggestedAction, "open_sos");
+      assert(response.reply.includes("112") || response.reply.includes("SOS"));
+      assert.strictEqual(response.provider, "sheshield_safety_engine");
+    });
+
+    it("detects emergency intent in Tamil and Hindi correctly", () => {
+      const taResponse = generateContextualSafetyResponse("எனக்கு ஆபத்து காப்பாற்றுங்கள்", [], "ta");
+      assert.strictEqual(taResponse.suggestedAction, "open_sos");
+      assert(taResponse.reply.includes("SOS") && taResponse.reply.includes("112"));
+
+      const hiResponse = generateContextualSafetyResponse("मुझे बहुत खतरा लग रहा है, बचाओ", [], "hi");
+      assert.strictEqual(hiResponse.suggestedAction, "open_sos");
+      assert(hiResponse.reply.includes("SOS") && hiResponse.reply.includes("112"));
+    });
+
+    it("detects uncomfortable situation and triggers fake call recommendation", () => {
+      const response = generateContextualSafetyResponse("I feel uncomfortable with this taxi driver, give me an excuse", [], "en");
+      assert.strictEqual(response.suggestedAction, "open_fake_call");
+      assert(response.reply.toLowerCase().includes("call") || response.reply.toLowerCase().includes("simulat"));
+    });
+
+    it("retrieves legal citations for Zero FIR and police assistance queries", () => {
+      const response = generateContextualSafetyResponse("What should I do if a police officer refuses my FIR?", [], "en");
+      assert(response.meta?.citations && response.meta.citations.length > 0);
+      assert(response.reply.toLowerCase().includes("zero fir") || response.reply.includes("173") || response.reply.includes("154"));
+    });
+
+    it("provides safe navigation advice for routing questions", () => {
+      const response = generateContextualSafetyResponse("What is the safest way to walk to the metro station?", [], "en");
+      assert.strictEqual(response.suggestedAction, "view_map");
+      assert(response.reply.toLowerCase().includes("route") || response.reply.toLowerCase().includes("map"));
+    });
+  });
+
+  describe("Active Live Tracking Store", () => {
+    const testSessionId = `test_sess_${Date.now()}`;
+    const testToken = `token_${Date.now()}`;
+
+    it("registers and retrieves an active tracking session", () => {
+      const session = registerActiveSession({
+        id: testSessionId,
+        userId: "user_test_123",
+        shareToken: testToken,
+        title: "Test Evening Walk",
+        status: "active",
+        startedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 3600000).toISOString(),
+        isEmergency: false
+      });
+
+      assert.strictEqual(session.id, testSessionId);
+      assert.strictEqual(session.shareToken, testToken);
+
+      const byToken = getSessionByToken(testToken);
+      assert(byToken !== null);
+      assert.strictEqual(byToken?.id, testSessionId);
+
+      const byId = getSessionById(testSessionId);
+      assert(byId !== null);
+      assert.strictEqual(byId?.shareToken, testToken);
+    });
+
+    it("updates GPS coordinates and records breadcrumb history", () => {
+      const updated = updateSessionLocation(testSessionId, {
+        latitude: 12.9716,
+        longitude: 77.5946,
+        accuracy: 12,
+        speed: 1.4,
+        heading: 90
+      });
+
+      assert.strictEqual(updated, true);
+
+      const session = getSessionById(testSessionId);
+      assert(session !== null);
+      assert.strictEqual(session?.latestLocation?.latitude, 12.9716);
+      assert.strictEqual(session?.latestLocation?.longitude, 77.5946);
+      assert.strictEqual(session?.locationHistory.length, 1);
+      assert.strictEqual(session?.locationHistory[0].latitude, 12.9716);
+
+      // Add second breadcrumb
+      updateSessionLocation(testSessionId, {
+        latitude: 12.9720,
+        longitude: 77.5950,
+        accuracy: 10
+      });
+
+      const updatedSession = getSessionById(testSessionId);
+      assert.strictEqual(updatedSession?.locationHistory.length, 2);
+    });
+
+    it("marks session as ended when requested", () => {
+      const ended = endSession(testSessionId);
+      assert.strictEqual(ended, true);
+
+      const session = getSessionById(testSessionId);
+      assert.strictEqual(session?.status, "ended");
+
+      // Cannot update coordinates after session has ended
+      const tryUpdate = updateSessionLocation(testSessionId, {
+        latitude: 12.9730,
+        longitude: 77.5960
+      });
+      assert.strictEqual(tryUpdate, false);
+    });
+  });
 });
+

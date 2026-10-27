@@ -189,8 +189,8 @@ export function SOSModal({ isOpen, onClose, currentLang }: SOSModalProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-lg bg-background rounded-3xl border border-red-500/30 shadow-2xl p-6 sm:p-8 text-foreground overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-md animate-in fade-in duration-200">
+      <div className="relative w-full max-w-lg max-h-[92vh] overflow-y-auto bg-background rounded-3xl border border-red-500/30 shadow-2xl p-4 sm:p-8 text-foreground">
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -313,7 +313,7 @@ export function SOSModal({ isOpen, onClose, currentLang }: SOSModalProps) {
             </div>
 
             {/* Intentional Hold-to-Activate Button */}
-            <div className="relative w-40 h-40 mx-auto">
+            <div className="relative w-32 h-32 sm:w-40 sm:h-40 mx-auto">
               <button
                 onMouseDown={handlePressStart}
                 onMouseUp={handlePressEnd}
