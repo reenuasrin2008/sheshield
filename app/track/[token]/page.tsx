@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import * as maplibregl from "maplibre-gl";
+import { maplibregl } from "@/lib/map/maplibre-init";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Suspense } from "react";
 import { Shield, Clock, AlertTriangle, CheckCircle2, Phone, Loader2, Navigation, Crosshair } from "lucide-react";

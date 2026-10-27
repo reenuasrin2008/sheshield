@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import * as maplibregl from "maplibre-gl";
+import { maplibregl } from "@/lib/map/maplibre-init";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
   Navigation,
