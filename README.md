@@ -1,6 +1,7 @@
+
 # 🛡️ SheShield — The AI Guardian
 
-> _"Every woman deserves to walk free — not just fearless, but protected."_
+> *"Every woman deserves to walk free — not just fearless, but protected."*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-6c2bd9.svg)](https://opensource.org/licenses/MIT)
 [![Status: Prototype](https://img.shields.io/badge/Status-Prototype-e83e8c.svg)](#)
@@ -13,7 +14,7 @@
 
 ---
 
-## 🔥 The Problem We refuse to Look Away From
+## 🔥 The Problem We Refuse to Look Away From
 
 In India alone, a woman is reported unsafe every **9 minutes**. Yet most safety apps fail her precisely when she needs them most — dead batteries, no internet, language barriers, and reactive (not predictive) alerts. SheShield exists to flip the script: **from panic-button after the fact, to a silent guardian before the threat.**
 
@@ -22,12 +23,15 @@ In India alone, a woman is reported unsafe every **9 minutes**. Yet most safety 
 ## ✨ Key Pillars
 
 ### 🧠 1. Risk Detection AI
+
 A predictive engine that fuses geolocation, motion, audio cues, and historical hotspot data to **forecast risk before it escalates**. Powered by lightweight ML models that run on-device — no cloud round-trip, no leaks.
 
 ### 🎙️ 2. Voice Intelligence (Local Languages)
-Speak. Don't type. SheShield understands **Hindi, Tamil, Telugu, Bengali, Marathi & more** — natural voice commands like _"Help me, I'm at the bus stand"_ trigger instant SOS, location sharing, and trusted-contact escalation. Built for the 90% of India that doesn't think in English.
+
+Speak. Don't type. SheShield understands **Hindi, Tamil, Telugu, Bengali, Marathi & more** — natural voice commands like *"Help me, I'm at the bus stand"* trigger instant SOS, location sharing, and trusted-contact escalation. Built for the 90% of India that doesn't think in English.
 
 ### ⚖️ 3. Offline-First Legal Support
+
 A pocket lawyer that never sleeps — and never needs signal. Critical legal rights, IPC sections, nearest police stations, women's helplines, and step-by-step FIR guidance cached **locally**. Syncs with national databases when connectivity returns.
 
 ---
@@ -37,29 +41,29 @@ A pocket lawyer that never sleeps — and never needs signal. Critical legal rig
 ```mermaid
 flowchart TB
     subgraph USER["👩 User Layer"]
-        W[Woman in Distress]
+        W["Woman in Distress"]
     end
 
     subgraph EDGE["📱 Edge Device — Offline First"]
-        APP[SheShield App]
-        VAI[🎙️ Voice Intelligence<br/>Multilingual NLU]
-        RD[🧠 Risk Detection AI<br/>On-device ML Inference]
-        CACHE[💾 Local Legal Cache<br/>Rights, IPC, Helplines]
-        SOS[SOS Engine]
+        APP["SheShield App"]
+        VAI["🎙️ Voice Intelligence<br/>Multilingual NLU"]
+        RD["🧠 Risk Detection AI<br/>On-device ML Inference"]
+        CACHE["💾 Local Legal Cache<br/>Rights, IPC, Helplines"]
+        SOS["SOS Engine"]
     end
 
     subgraph CLOUD["☁️ Cloud Layer — Sync When Online"]
-        API[SheShield API Gateway]
-        HOTSPOT[Risk Hotspot DB]
-        LEGAL[National Legal Knowledge Base]
-        CONTACTS[Trusted Contact Mesh]
-        AUTH[Auth & Encryption]
+        API["SheShield API Gateway"]
+        HOTSPOT["Risk Hotspot DB"]
+        LEGAL["National Legal Knowledge Base"]
+        CONTACTS["Trusted Contact Mesh"]
+        AUTH["Auth & Encryption"]
     end
 
     subgraph ACTION["🚨 Response Layer"]
-        POLICE[Police Dispatch]
-        NGO[NGO Partners]
-        KIN[Family / Guardians]
+        POLICE["Police Dispatch"]
+        NGO["NGO Partners"]
+        KIN["Family / Guardians"]
     end
 
     W -->|"Voice command / Tap / Auto-trigger"| APP
@@ -91,7 +95,7 @@ flowchart TB
     class POLICE,NGO,KIN action
 ```
 
-The architecture is deliberately **edge-heavy** — the three AI pillars (Risk Detection, Voice Intelligence, Legal Support) all run locally so the user is never abandoned at the moment of crisis. The cloud layer only enriches: hotspot mapping, legal updates, and trusted-contact orchestration.
+The architecture is deliberately **edge-heavy** — the three AI pillars (Risk Detection, Voice Intelligence, Legal Support) are designed to run locally so the user can receive support when connectivity is unavailable. Cloud services can enrich hotspot mapping, legal updates, and trusted-contact coordination when available.
 
 ---
 
@@ -99,27 +103,27 @@ The architecture is deliberately **edge-heavy** — the three AI pillars (Risk D
 
 ```mermaid
 flowchart LR
-    A([👩 Woman senses risk]) --> B{Voice command?}
-    B -->|Yes| C[🎙️ Multilingual NLU<br/>parses intent & location]
-    B -->|No tap, auto-trigger| D[🧠 Risk AI detects<br/>anomaly pattern]
-    C --> E[SOS Engine Activated]
+    A(["👩 Woman senses risk"]) --> B{"Voice command?"}
+    B -->|Yes| C["🎙️ Multilingual NLU<br/>parses intent & location"]
+    B -->|No| D["🧠 Risk AI detects<br/>anomaly pattern"]
+    C --> E["SOS Engine Activated"]
     D --> E
-    E --> F[Risk Score Computed]
-    F --> G{High risk?}
-    G -->|Yes| H[🚨 Alert Trusted Contacts<br/>+ Police + NGO]
-    G -->|Moderate| I[📱 Silent Track<br/>+ Pre-warn contacts]
-    H --> J[⚖️ Offline Legal Guidance<br/>Pushed to screen]
+    E --> F["Risk Score Computed"]
+    F --> G{"High risk?"}
+    G -->|Yes| H["🚨 Alert Trusted Contacts<br/>+ Police + NGO"]
+    G -->|Moderate| I["📱 Silent Track<br/>+ Pre-warn contacts"]
+    H --> J["⚖️ Offline Legal Guidance<br/>Pushed to screen"]
     I --> J
-    J --> K([🛡️ Woman Reaches Safety])
+    J --> K(["🛡️ Woman Reaches Safety"])
 
-    classDef start fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
-    classDef decide fill:#fff8e1,stroke:#f9a825,stroke-width:2px,color:#000
-    classDef action fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
-    classDef end fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef startNode fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000
+    classDef decisionNode fill:#fff8e1,stroke:#f9a825,stroke-width:2px,color:#000
+    classDef actionNode fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+    classDef finishNode fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
 
-    class A,K start
-    class B,G decide
-    class C,D,E,F,H,I,J action
+    class A,K startNode
+    class B,G decisionNode
+    class C,D,E,F,H,I,J actionNode
 ```
 
 Every path converges on one outcome: **the woman reaches safety with legal empowerment in her hand** — signal or no signal.
@@ -161,7 +165,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 📂 Project Structure
 
-```
+```text
 SheShield-The-AI-Guardian/
 ├── app/                  # FastAPI backend
 │   ├── main.py
@@ -170,8 +174,8 @@ SheShield-The-AI-Guardian/
 ├── risk_ai/              # Risk detection ML models
 ├── voice/                # Multilingual NLU modules
 ├── legal/                # Offline legal cache & RAG
-├── mobile/               # Flutter / RN app shell
-├── scripts/              # Setup & seed scripts
+├── mobile/               # Flutter / React Native app shell
+├── scripts/              # Setup and seed scripts
 └── docs/                 # Architecture deep-dives
 ```
 
@@ -189,27 +193,27 @@ SheShield-The-AI-Guardian/
 
 ## 🤝 Contributing
 
-SheShield is mission-driven and open by design. Whether you bring ML chops, Indic-language NLP skills, legal domain knowledge, or field-testing capacity — **there is a role for you**.
+SheShield is mission-driven and open by design. Whether you bring ML skills, Indic-language NLP expertise, legal-domain knowledge, or field-testing experience, there's a role for you.
 
-1. Fork the repo
+1. Fork the repository.
 2. Create a branch: `git checkout -b feature/your-idea`
-3. Commit with clear messages
-4. Open a PR — describe the impact on women's safety
+3. Commit with clear messages.
+4. Open a pull request describing the impact on women's safety.
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for guidelines and our code of conduct.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for guidelines and the code of conduct.
 
 ---
 
 ## 📜 License
 
-Released under the **MIT License** — because safety tech should be free to build upon. See [`LICENSE`](./LICENSE).
+Released under the **MIT License** — because safety technology should be free to build upon. See [`LICENSE`](./LICENSE).
 
 ---
 
 ## 💜 Why SheShield?
 
-Because the next 9 minutes belong to her — not to fate. SheShield isn't another panic button; it's a **predictive guardian** that speaks her language, knows her rights, and stands between her and harm — **even when the signal dies**.
+Because the next 9 minutes belong to her — not to fate. SheShield isn't another panic button; it's a **predictive guardian** designed to speak her language, help her understand her rights, and connect her with support when she needs it.
 
-> _Built with urgency. Open by principle. Guarded by AI._
+> *Built with urgency. Open by principle. Guarded by AI.*
 
-**⭐ Star this repo if the mission resonates.**
+**⭐ Star this repository if the mission resonates.**
