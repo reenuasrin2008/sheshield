@@ -104,6 +104,8 @@ export function SafetyHeatmap({ currentLang = "en" }: SafetyHeatmapProps) {
   const [submitSeverity, setSubmitSeverity] = useState<"low" | "medium" | "high">("medium");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const reportsRef = useRef<SafetyReport[]>([]);
+
   // 1. Fetch Safety Reports with active filters
   const fetchReports = useCallback(async () => {
     setIsRefreshing(true);
@@ -113,6 +115,7 @@ export function SafetyHeatmap({ currentLang = "en" }: SafetyHeatmapProps) {
       const data = await res.json();
       if (data && Array.isArray(data.reports)) {
         setReports(data.reports);
+        reportsRef.current = data.reports;
         if (data.stats) {
           setStats(data.stats);
         }
@@ -129,50 +132,31 @@ export function SafetyHeatmap({ currentLang = "en" }: SafetyHeatmapProps) {
     fetchReports();
   }, [fetchReports]);
 
-  // 2. Initialize MapLibre GL instance
-  useEffect(() => {
-    if (!mapContainer.current) return;
-
-    const style = mapStyleType === "google" ? GOOGLE_ROADMAP_STYLE : OSM_STYLE;
-
-    if (mapRef.current) {
-      mapRef.current.setStyle(style);
+  // 3. Update Heatmap & Clustered Markers Layer on Map
+  const updateMapLayers = useCallback((map: maplibregl.Map, currentReports: SafetyReport[]) => {
+    if (!map) return;
+    if (!map.isStyleLoaded()) {
+      const onReady = () => {
+        map.off("load", onReady);
+        map.off("styledata", onReady);
+        updateMapLayers(map, currentReports);
+      };
+      map.once("load", onReady);
+      map.once("styledata", onReady);
       return;
     }
 
-    const map = new maplibregl.Map({
-      container: mapContainer.current,
-      style,
-      center: [77.2195, 28.6280], // Central hub
-      zoom: 13,
-      pitch: 20
-    });
-
-    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
-
-    map.on("load", () => {
-      mapRef.current = map;
-      updateMapLayers(map, reports);
-    });
-
-    return () => {
-      // Map cleanup
-    };
-  }, [mapStyleType]);
-
-  // 3. Update Heatmap & Clustered Markers Layer on Map
-  const updateMapLayers = useCallback((map: maplibregl.Map, currentReports: SafetyReport[]) => {
     // Clear existing markers
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
 
-    // Remove existing layers & source if already present
-    if (map.getLayer("safety-heatmap-layer")) map.removeLayer("safety-heatmap-layer");
-    if (map.getSource("safety-reports-source")) map.removeSource("safety-reports-source");
+    const validReports = currentReports.filter(
+      r => typeof r.latitude === "number" && typeof r.longitude === "number" && !isNaN(r.latitude) && !isNaN(r.longitude)
+    );
 
     const geojsonData: GeoJSON.FeatureCollection = {
       type: "FeatureCollection",
-      features: currentReports.map(r => ({
+      features: validReports.map(r => ({
         type: "Feature",
         properties: {
           id: r.id,
@@ -191,47 +175,54 @@ export function SafetyHeatmap({ currentLang = "en" }: SafetyHeatmapProps) {
       }))
     };
 
-    map.addSource("safety-reports-source", {
-      type: "geojson",
-      data: geojsonData
-    });
+    const existingSource = map.getSource("safety-reports-source") as maplibregl.GeoJSONSource;
+    if (existingSource && typeof existingSource.setData === "function") {
+      existingSource.setData(geojsonData);
+    } else {
+      try {
+        if (map.getLayer("safety-heatmap-layer")) map.removeLayer("safety-heatmap-layer");
+        if (map.getSource("safety-reports-source")) map.removeSource("safety-reports-source");
 
-    // Heatmap Layer (Dense glow reflecting report severity and count)
-    map.addLayer({
-      id: "safety-heatmap-layer",
-      type: "heatmap",
-      source: "safety-reports-source",
-      maxzoom: 17,
-      paint: {
-        // Increase the heatmap weight based on report severity
-        "heatmap-weight": ["get", "weight"],
-        // Color ramp for heatmap: transparent -> peach -> warm orange -> rose-red -> deep crimson
-        "heatmap-color": [
-          "interpolate",
-          ["linear"],
-          ["heatmap-density"],
-          0,
-          "rgba(255, 255, 255, 0)",
-          0.2,
-          "rgba(254, 215, 170, 0.7)",
-          0.4,
-          "rgba(251, 146, 60, 0.8)",
-          0.7,
-          "rgba(244, 63, 94, 0.85)",
-          1,
-          "rgba(190, 18, 60, 0.95)"
-        ],
-        // Adjust radius by zoom level
-        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 10, 25, 15, 55],
-        // Transition opacity as you zoom in closer
-        "heatmap-opacity": 0.82
+        map.addSource("safety-reports-source", {
+          type: "geojson",
+          data: geojsonData
+        });
+
+        map.addLayer({
+          id: "safety-heatmap-layer",
+          type: "heatmap",
+          source: "safety-reports-source",
+          maxzoom: 17,
+          paint: {
+            "heatmap-weight": ["get", "weight"],
+            "heatmap-color": [
+              "interpolate",
+              ["linear"],
+              ["heatmap-density"],
+              0,
+              "rgba(0, 0, 0, 0)",
+              0.2,
+              "rgba(254, 215, 170, 0.7)",
+              0.4,
+              "rgba(251, 146, 60, 0.8)",
+              0.7,
+              "rgba(244, 63, 94, 0.85)",
+              1,
+              "rgba(190, 18, 60, 0.95)"
+            ],
+            "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 10, 25, 15, 55],
+            "heatmap-opacity": 0.85
+          }
+        });
+      } catch (err) {
+        console.warn("Could not add heatmap layer:", err);
       }
-    });
+    }
 
     // Add Interactive Severity Pin Markers for each report
     const bounds = new maplibregl.LngLatBounds();
 
-    currentReports.forEach(r => {
+    validReports.forEach(r => {
       const el = document.createElement("div");
       el.className = "cursor-pointer group flex items-center justify-center";
       
@@ -280,17 +271,74 @@ export function SafetyHeatmap({ currentLang = "en" }: SafetyHeatmapProps) {
       bounds.extend([r.longitude, r.latitude]);
     });
 
-    if (!bounds.isEmpty() && currentReports.length > 0) {
+    if (!bounds.isEmpty() && validReports.length > 0) {
       map.fitBounds(bounds, { padding: 50, maxZoom: 15 });
     }
   }, []);
 
-  // Update map when reports list changes
+  // 2. Initialize MapLibre GL instance
   useEffect(() => {
-    if (mapRef.current && mapRef.current.isStyleLoaded()) {
-      updateMapLayers(mapRef.current, reports);
+    if (!mapContainer.current) return;
+
+    const style = mapStyleType === "google" ? GOOGLE_ROADMAP_STYLE : OSM_STYLE;
+
+    if (mapRef.current) {
+      mapRef.current.setStyle(style);
+      const m = mapRef.current;
+      const onReady = () => {
+        m.off("load", onReady);
+        m.off("styledata", onReady);
+        updateMapLayers(m, reportsRef.current);
+      };
+      m.once("load", onReady);
+      m.once("styledata", onReady);
+      return;
+    }
+
+    const map = new maplibregl.Map({
+      container: mapContainer.current,
+      style,
+      center: [77.2195, 28.6280],
+      zoom: 13,
+      pitch: 20
+    });
+
+    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
+
+    map.on("load", () => {
+      mapRef.current = map;
+      updateMapLayers(map, reportsRef.current);
+    });
+
+    return () => {
+      markersRef.current.forEach(m => m.remove());
+      markersRef.current = [];
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [mapStyleType, updateMapLayers]);
+
+  // Sync reports to map whenever reports change
+  useEffect(() => {
+    reportsRef.current = reports;
+    if (mapRef.current) {
+      if (mapRef.current.isStyleLoaded()) {
+        updateMapLayers(mapRef.current, reports);
+      } else {
+        const m = mapRef.current;
+        const onReady = () => {
+          m.off("load", onReady);
+          m.off("styledata", onReady);
+          updateMapLayers(m, reportsRef.current);
+        };
+        m.once("load", onReady);
+        m.once("styledata", onReady);
+      }
     }
   }, [reports, updateMapLayers]);
+
 
   // Center map on clicked report card
   const handleSelectReportCard = (report: SafetyReport) => {
