@@ -16,7 +16,8 @@ import {
   Check,
   Info,
   Map as MapIcon,
-  Layers
+  Layers,
+  X
 } from "lucide-react";
 import { SupportedLanguage, RouteGeometry, AssistanceResource } from "@/types/sheshield";
 import { getTranslation } from "@/lib/i18n/translations";
@@ -33,6 +34,66 @@ declare global {
   }
 }
 
+// 1. Google Maps Roadmap Tile Style (Crisp Google Roadmap with roads, highway markers & street names)
+const GOOGLE_ROADMAP_STYLE: any = {
+  version: 8,
+  sources: {
+    "google-roadmap": {
+      type: "raster",
+      tiles: [
+        "https://mt0.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        "https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        "https://mt2.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+        "https://mt3.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
+      ],
+      tileSize: 256,
+      attribution: "Map data © Google Maps"
+    }
+  },
+  layers: [
+    {
+      id: "google-roadmap-layer",
+      type: "raster",
+      source: "google-roadmap",
+      minzoom: 0,
+      maxzoom: 22
+    }
+  ]
+};
+
+// 2. Google Maps Satellite Hybrid Style (Authentic aerial satellite imagery with street overlay)
+const GOOGLE_SATELLITE_STYLE: any = {
+  version: 8,
+  sources: {
+    "google-satellite": {
+      type: "raster",
+      tiles: [
+        "https://mt0.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        "https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        "https://mt2.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        "https://mt3.google.com/vt/lyrs=y&x={x}&y={y}&z={z}"
+      ],
+      tileSize: 256,
+      attribution: "Imagery © Google Maps"
+    }
+  },
+  layers: [
+    {
+      id: "google-satellite-layer",
+      type: "raster",
+      source: "google-satellite",
+      minzoom: 0,
+      maxzoom: 22
+    }
+  ]
+};
+
+const OSM_STYLE =
+  process.env.NEXT_PUBLIC_MAP_STYLE_URL ||
+  "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+
+export type MapProviderMode = "google" | "google-satellite" | "osm" | "google-sdk";
+
 export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapLibreRef = useRef<maplibregl.Map | null>(null);
@@ -46,11 +107,9 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
 
   const t = getTranslation(currentLang);
 
-  // Map Provider State: 'google' or 'maplibre'
+  // Map Provider State: Default to "google" (Google Maps Roadmap)
   const googleApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-  const [mapProvider, setMapProvider] = useState<"google" | "maplibre">(
-    googleApiKey ? "google" : "maplibre"
-  );
+  const [mapProvider, setMapProvider] = useState<MapProviderMode>("google");
   const [googleLoadError, setGoogleLoadError] = useState<string | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
 
@@ -92,67 +151,106 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       .catch(err => console.warn("Could not fetch assistance:", err));
   }, []);
 
-  // 2. Load Google Maps script when provider is google
+  // 2. Render route on MapLibre
+  const renderRouteOnMapLibre = useCallback((route: RouteGeometry) => {
+    if (!mapLibreRef.current) return;
+    const map = mapLibreRef.current;
+    if (map.getLayer("route-line")) map.removeLayer("route-line");
+    if (map.getSource("route-source")) map.removeSource("route-source");
+
+    map.addSource("route-source", {
+      type: "geojson",
+      data: {
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "LineString",
+          coordinates: route.coordinates
+        }
+      }
+    });
+
+    map.addLayer({
+      id: "route-line",
+      type: "line",
+      source: "route-source",
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": "#e11d48",
+        "line-width": 5,
+        "line-opacity": 0.85
+      }
+    });
+
+    const bounds = new maplibregl.LngLatBounds();
+    route.coordinates.forEach(c => bounds.extend(c));
+    map.fitBounds(bounds, { padding: 40 });
+  }, []);
+
+  // 3. Load Google Maps JS SDK script when requested
   const loadGoogleScript = useCallback(async (): Promise<boolean> => {
     if (typeof window === "undefined") return false;
     if (window.google && window.google.maps) return true;
     if (!googleApiKey) return false;
 
     return new Promise((resolve) => {
-      // Capture auth failure callback
       window.gm_authFailure = () => {
-        console.warn("[SheShield] Google Maps API auth failure. Falling back to MapLibre.");
-        setGoogleLoadError("Google Maps Demo Key requires billing authorization. Switched to OpenStreetMap.");
-        setMapProvider("maplibre");
+        console.warn("[SheShield] Google Maps API auth failure. Falling back to Google Roadmap.");
+        setGoogleLoadError("Google Maps JS SDK requires an active billing account on your Google Cloud Project. Switched to Google Maps Roadmap tiles.");
+        setMapProvider("google");
         resolve(false);
       };
 
-      const existingScript = document.getElementById("google-maps-script");
+      const existingScript = document.getElementById("google-maps-script") as HTMLScriptElement | null;
       if (existingScript) {
-        existingScript.addEventListener("load", () => resolve(true));
-        existingScript.addEventListener("error", () => resolve(false));
+        if (window.google && window.google.maps) {
+          resolve(true);
+          return;
+        }
+        existingScript.addEventListener("load", () => resolve(true), { once: true });
+        existingScript.addEventListener("error", () => resolve(false), { once: true });
         return;
       }
 
       const script = document.createElement("script");
       script.id = "google-maps-script";
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${googleApiKey}&libraries=places`;
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${googleApiKey}`;
       script.async = true;
       script.defer = true;
       script.onload = () => resolve(true);
       script.onerror = () => {
         console.warn("Failed to load Google Maps script");
-        setGoogleLoadError("Could not load Google Maps script. Switched to OpenStreetMap.");
-        setMapProvider("maplibre");
+        setGoogleLoadError("Could not load Google Maps JS SDK. Switched to Google Maps Roadmap tiles.");
+        setMapProvider("google");
         resolve(false);
       };
       document.head.appendChild(script);
     });
   }, [googleApiKey]);
 
-  // 3. Initialize Map based on mapProvider
+  // 4. Initialize Map based on mapProvider
   useEffect(() => {
     if (!mapContainer.current) return;
     let isCancelled = false;
 
-    async function initMap() {
+    const defaultCenter = userLocation
+      ? { lat: userLocation.lat, lng: userLocation.lon }
+      : { lat: 28.6139, lng: 77.209 };
+
+    if (mapProvider === "google-sdk") {
       setIsMapReady(false);
-      const defaultCenter = userLocation
-        ? { lat: userLocation.lat, lng: userLocation.lon }
-        : { lat: 28.6139, lng: 77.209 };
+      if (mapLibreRef.current) {
+        mapLibreRef.current.remove();
+        mapLibreRef.current = null;
+      }
+      if (mapContainer.current) {
+        mapContainer.current.innerHTML = "";
+      }
 
-      if (mapProvider === "google") {
-        const loaded = await loadGoogleScript();
+      loadGoogleScript().then(loaded => {
         if (isCancelled) return;
-
-        if (loaded && window.google && window.google.maps) {
+        if (loaded && window.google?.maps && mapContainer.current) {
           try {
-            // Cleanup MapLibre if previously active
-            if (mapLibreRef.current) {
-              mapLibreRef.current.remove();
-              mapLibreRef.current = null;
-            }
-
             const gMap = new window.google.maps.Map(mapContainer.current, {
               center: defaultCenter,
               zoom: 14,
@@ -170,58 +268,79 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
 
             googleMapRef.current = gMap;
             setIsMapReady(true);
-            return;
           } catch (e: any) {
-            console.warn("Google Maps initialization exception:", e.message);
-            setMapProvider("maplibre");
+            console.warn("Google Maps JS SDK initialization exception:", e.message);
+            setGoogleLoadError("Google Maps JS SDK: " + (e.message || "Failed to initialize"));
+            setMapProvider("google");
           }
         } else {
-          setMapProvider("maplibre");
+          setMapProvider("google");
         }
-      }
+      });
 
-      // MapLibre Initialization
-      if (mapProvider === "maplibre") {
-        if (googleMapRef.current) {
-          googleMapRef.current = null;
-        }
+      return () => {
+        isCancelled = true;
+      };
+    }
 
-        const mapStyle =
-          process.env.NEXT_PUBLIC_MAP_STYLE_URL ||
-          "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
-
-        const map = new maplibregl.Map({
-          container: mapContainer.current!,
-          style: mapStyle,
-          center: [defaultCenter.lng, defaultCenter.lat],
-          zoom: 14
-        });
-
-        map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
-
-        map.on("load", () => {
-          if (!isCancelled) {
-            mapLibreRef.current = map;
-            setIsMapReady(true);
-          }
-        });
+    // MapLibre-powered Tile Engine ("google", "google-satellite", or "osm")
+    if (googleMapRef.current) {
+      googleMapRef.current = null;
+      if (mapContainer.current) {
+        mapContainer.current.innerHTML = "";
       }
     }
 
-    initMap();
+    const targetStyle =
+      mapProvider === "google"
+        ? GOOGLE_ROADMAP_STYLE
+        : mapProvider === "google-satellite"
+        ? GOOGLE_SATELLITE_STYLE
+        : OSM_STYLE;
+
+    if (mapLibreRef.current) {
+      // Smooth dynamic style transition without destroying map state
+      mapLibreRef.current.setStyle(targetStyle);
+      mapLibreRef.current.once("style.load", () => {
+        if (!isCancelled && activeRoute) {
+          renderRouteOnMapLibre(activeRoute);
+        }
+      });
+      return;
+    }
+
+    // Initial MapLibre mount
+    const map = new maplibregl.Map({
+      container: mapContainer.current!,
+      style: targetStyle,
+      center: [defaultCenter.lng, defaultCenter.lat],
+      zoom: 14
+    });
+
+    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), "top-right");
+
+    map.on("load", () => {
+      if (!isCancelled) {
+        mapLibreRef.current = map;
+        setIsMapReady(true);
+        if (activeRoute) {
+          renderRouteOnMapLibre(activeRoute);
+        }
+      }
+    });
 
     return () => {
       isCancelled = true;
     };
-  }, [mapProvider, loadGoogleScript]);
+  }, [mapProvider, loadGoogleScript, activeRoute, renderRouteOnMapLibre]);
 
   // 4. Update Markers on User Location Changes
   useEffect(() => {
     if (!userLocation) return;
     const { lat, lon } = userLocation;
 
-    // Google Maps User Marker
-    if (mapProvider === "google" && googleMapRef.current && window.google?.maps) {
+    // Google Maps JS SDK User Marker
+    if (mapProvider === "google-sdk" && googleMapRef.current && window.google?.maps) {
       if (!googleUserMarkerRef.current) {
         googleUserMarkerRef.current = new window.google.maps.Marker({
           position: { lat, lng: lon },
@@ -241,8 +360,8 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       }
     }
 
-    // MapLibre User Marker
-    if (mapProvider === "maplibre" && mapLibreRef.current) {
+    // MapLibre User Marker (Google Roadmap, Satellite, OSM)
+    if (mapProvider !== "google-sdk" && mapLibreRef.current) {
       if (!userMarkerRef.current) {
         const el = document.createElement("div");
         el.className = "relative flex items-center justify-center";
@@ -265,8 +384,8 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
   useEffect(() => {
     if (!isMapReady) return;
 
-    // Google Maps Assistance Markers
-    if (mapProvider === "google" && googleMapRef.current && window.google?.maps) {
+    // Google Maps JS SDK Assistance Markers
+    if (mapProvider === "google-sdk" && googleMapRef.current && window.google?.maps) {
       // Clear old markers
       googleResourceMarkersRef.current.forEach(m => m.setMap(null));
       googleResourceMarkersRef.current = [];
@@ -308,8 +427,8 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       });
     }
 
-    // MapLibre Assistance Markers
-    if (mapProvider === "maplibre" && mapLibreRef.current) {
+    // MapLibre Assistance Markers (Google Roadmap, Satellite, OSM)
+    if (mapProvider !== "google-sdk" && mapLibreRef.current) {
       const markers: maplibregl.Marker[] = [];
       assistanceResources.forEach(res => {
         if (res.category === "police" && !showPolice) return;
@@ -367,14 +486,14 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
         setLocationPermissionStatus("granted");
         setLastLocationTime(new Date().toLocaleTimeString());
 
-        // Recenter Google Map
-        if (mapProvider === "google" && googleMapRef.current) {
+        // Recenter Google Map JS SDK
+        if (mapProvider === "google-sdk" && googleMapRef.current) {
           googleMapRef.current.panTo({ lat: latitude, lng: longitude });
           googleMapRef.current.setZoom(15);
         }
 
-        // Recenter MapLibre
-        if (mapProvider === "maplibre" && mapLibreRef.current) {
+        // Recenter MapLibre (Roadmap, Satellite, OSM)
+        if (mapProvider !== "google-sdk" && mapLibreRef.current) {
           mapLibreRef.current.flyTo({ center: [longitude, latitude], zoom: 15 });
         }
       },
@@ -542,8 +661,8 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       const route: RouteGeometry = await res.json();
       setActiveRoute(route);
 
-      // Render on Google Maps
-      if (mapProvider === "google" && googleMapRef.current && window.google?.maps) {
+      // Render on Google Maps JS SDK
+      if (mapProvider === "google-sdk" && googleMapRef.current && window.google?.maps) {
         if (googleRouteLineRef.current) {
           googleRouteLineRef.current.setMap(null);
         }
@@ -567,39 +686,9 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
         googleMapRef.current.fitBounds(bounds);
       }
 
-      // Render on MapLibre
-      if (mapProvider === "maplibre" && mapLibreRef.current) {
-        const map = mapLibreRef.current;
-        if (map.getLayer("route-line")) map.removeLayer("route-line");
-        if (map.getSource("route-source")) map.removeSource("route-source");
-
-        map.addSource("route-source", {
-          type: "geojson",
-          data: {
-            type: "Feature",
-            properties: {},
-            geometry: {
-              type: "LineString",
-              coordinates: route.coordinates
-            }
-          }
-        });
-
-        map.addLayer({
-          id: "route-line",
-          type: "line",
-          source: "route-source",
-          layout: { "line-join": "round", "line-cap": "round" },
-          paint: {
-            "line-color": "#e11d48",
-            "line-width": 5,
-            "line-opacity": 0.85
-          }
-        });
-
-        const bounds = new maplibregl.LngLatBounds();
-        route.coordinates.forEach(c => bounds.extend(c));
-        map.fitBounds(bounds, { padding: 40 });
+      // Render on MapLibre (Roadmap, Satellite, OSM)
+      if (mapProvider !== "google-sdk" && mapLibreRef.current) {
+        renderRouteOnMapLibre(route);
       }
     } catch (err: any) {
       alert(err.message || "Failed to calculate route");
@@ -612,6 +701,22 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     <div className="relative w-full h-[440px] sm:h-[540px] md:h-[620px] rounded-3xl overflow-hidden border border-border shadow-xl bg-slate-900 text-foreground">
       {/* Map Canvas */}
       <div ref={mapContainer} className="w-full h-full" />
+
+      {/* Google Maps Billing / Auth Alert Banner */}
+      {googleLoadError && (
+        <div className="absolute top-3 left-3 right-3 z-30 bg-amber-600/95 text-white text-xs p-3 rounded-2xl backdrop-blur-md shadow-xl flex items-center justify-between animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-200" />
+            <span className="leading-snug">{googleLoadError}</span>
+          </div>
+          <button
+            onClick={() => setGoogleLoadError(null)}
+            className="p-1 hover:bg-white/20 rounded-lg shrink-0 ml-2"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Permission Denied Banner */}
       {locationPermissionStatus === "denied" && (
@@ -667,7 +772,10 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
           {/* Provider Pill */}
           <div className="flex items-center bg-background/90 backdrop-blur-md p-1 rounded-xl border border-border text-[10px] font-bold shrink-0">
             <button
-              onClick={() => setMapProvider("google")}
+              onClick={() => {
+                setGoogleLoadError(null);
+                setMapProvider("google");
+              }}
               className={`px-2 py-1 rounded-lg transition-all ${
                 mapProvider === "google"
                   ? "bg-rose-600 text-white shadow-sm"
@@ -677,15 +785,44 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
               Google Maps
             </button>
             <button
-              onClick={() => setMapProvider("maplibre")}
+              onClick={() => {
+                setGoogleLoadError(null);
+                setMapProvider("google-satellite");
+              }}
               className={`px-2 py-1 rounded-lg transition-all ${
-                mapProvider === "maplibre"
+                mapProvider === "google-satellite"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Satellite
+            </button>
+            <button
+              onClick={() => {
+                setGoogleLoadError(null);
+                setMapProvider("osm");
+              }}
+              className={`px-2 py-1 rounded-lg transition-all ${
+                mapProvider === "osm"
                   ? "bg-slate-700 text-white shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              OpenStreetMap
+              OSM
             </button>
+            {googleApiKey && (
+              <button
+                onClick={() => setMapProvider("google-sdk")}
+                title="Direct Google Maps JavaScript API (Requires Cloud Billing)"
+                className={`px-2 py-1 rounded-lg transition-all ${
+                  mapProvider === "google-sdk"
+                    ? "bg-amber-600 text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                JS SDK
+              </button>
+            )}
           </div>
 
           {/* Layer toggles */}
