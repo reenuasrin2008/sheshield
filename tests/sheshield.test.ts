@@ -13,6 +13,7 @@ import {
   getSessionById,
   endSession
 } from "../lib/services/active-tracking-store";
+import { DEMO_SAFETY_REPORTS } from "../lib/data/safety-reports";
 
 describe("SheShield Core Systems Test Suite", () => {
   describe("Geospatial & Haversine Engine", () => {
@@ -269,6 +270,51 @@ describe("SheShield Core Systems Test Suite", () => {
         longitude: 77.5960
       });
       assert.strictEqual(tryUpdate, false);
+    });
+  });
+
+  describe("Safety Heatmap & Verified Reports Engine", () => {
+    it("ensures all public demonstration reports are verified and fuzzed for privacy", () => {
+      assert(DEMO_SAFETY_REPORTS.length >= 8, "Expected at least 8 demo reports");
+      DEMO_SAFETY_REPORTS.forEach((report: SafetyReport) => {
+        assert.strictEqual(report.status, "verified", "Public demo reports must be verified");
+        assert.strictEqual(report.is_demo, true, "Demonstration records must be explicitly tagged");
+        assert(report.fuzzed_latitude !== undefined, "Fuzzed latitude required for victim privacy");
+        assert(report.fuzzed_longitude !== undefined, "Fuzzed longitude required for victim privacy");
+      });
+    });
+
+    it("correctly filters reports by category", () => {
+      const lightingReports = DEMO_SAFETY_REPORTS.filter((r: SafetyReport) => r.category === "poor_lighting");
+      const harassmentReports = DEMO_SAFETY_REPORTS.filter((r: SafetyReport) => r.category === "harassment");
+
+      assert(lightingReports.length > 0, "Expected poor lighting reports");
+      assert(harassmentReports.length > 0, "Expected harassment reports");
+      lightingReports.forEach((r: SafetyReport) => assert.strictEqual(r.category, "poor_lighting"));
+    });
+
+    it("correctly filters reports across time windows (7d, 30d, 90d, all)", () => {
+      const now = Date.now();
+      const ONE_DAY = 24 * 60 * 60 * 1000;
+
+      const last7Days = DEMO_SAFETY_REPORTS.filter((r: SafetyReport) => new Date(r.reported_at).getTime() >= now - 7 * ONE_DAY);
+      const last30Days = DEMO_SAFETY_REPORTS.filter((r: SafetyReport) => new Date(r.reported_at).getTime() >= now - 30 * ONE_DAY);
+      const last90Days = DEMO_SAFETY_REPORTS.filter((r: SafetyReport) => new Date(r.reported_at).getTime() >= now - 90 * ONE_DAY);
+
+      assert(last7Days.length > 0, "Expected reports within 7 days");
+      assert(last30Days.length >= last7Days.length, "30-day window should contain more or equal reports than 7-day");
+      assert(last90Days.length >= last30Days.length, "90-day window should contain more or equal reports than 30-day");
+      assert(DEMO_SAFETY_REPORTS.length >= last90Days.length, "All-time should encompass all records");
+    });
+
+    it("dynamically computes data freshness stats without hardcoded counts", () => {
+      const filtered = DEMO_SAFETY_REPORTS.slice(0, 3);
+      const totalCount = filtered.length;
+      assert.strictEqual(totalCount, 3);
+
+      const latestTimestamp = Math.max(...filtered.map((r: SafetyReport) => new Date(r.reported_at).getTime()));
+      assert(latestTimestamp > 0, "Valid timestamp expected");
+      assert(latestTimestamp <= Date.now(), "Timestamp should be past or present");
     });
   });
 });

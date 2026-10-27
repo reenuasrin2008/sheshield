@@ -14,6 +14,7 @@ import { CommunityFeed } from "./CommunityFeed";
 import { MotionSOSListener } from "./MotionSOSListener";
 import { SupportedLanguage } from "@/types/sheshield";
 import { getTranslation } from "@/lib/i18n/translations";
+import Link from "next/link";
 import {
   Shield,
   MapPin,
@@ -27,7 +28,9 @@ import {
   HeartHandshake,
   CheckCircle2,
   ExternalLink,
-  Phone
+  Phone,
+  Flame,
+  Navigation
 } from "lucide-react";
 
 interface SheShieldAppProps {
@@ -120,6 +123,22 @@ export function SheShieldApp({ initialUserEmail, initialUserId }: SheShieldAppPr
                 <span>{t.sos_button}</span>
               </button>
 
+              <Link
+                href="/navigate"
+                className="px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm shadow-md shadow-emerald-600/20 flex items-center gap-2 transition-all hover:scale-105 active:scale-95"
+              >
+                <Navigation className="w-4 h-4" />
+                <span>Safe Route</span>
+              </Link>
+
+              <Link
+                href="/heatmap"
+                className="px-4 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs sm:text-sm shadow-md shadow-rose-600/20 flex items-center gap-2 transition-all hover:scale-105 active:scale-95"
+              >
+                <Flame className="w-4 h-4" />
+                <span>Safety Heatmap</span>
+              </Link>
+
               <button
                 onClick={() => setIsFakeCallOpen(true)}
                 className="px-4 py-2.5 rounded-2xl bg-muted/80 hover:bg-muted text-foreground font-semibold text-xs sm:text-sm border border-border shadow-sm flex items-center gap-2 transition-colors"
@@ -150,6 +169,23 @@ export function SheShieldApp({ initialUserEmail, initialUserId }: SheShieldAppPr
               <p className="text-xs text-muted-foreground mt-0.5">
                 Real device location tracking, turn-by-turn safe routing, and verified assistance layers.
               </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Link
+                href="/navigate"
+                className="px-3 py-1.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 hover:bg-emerald-100 transition-colors"
+              >
+                <Navigation className="w-3.5 h-3.5" />
+                <span>Full Safe Navigation</span>
+              </Link>
+              <Link
+                href="/heatmap"
+                className="px-3 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 hover:bg-rose-100 transition-colors"
+              >
+                <Flame className="w-3.5 h-3.5" />
+                <span>Open Heatmap</span>
+              </Link>
             </div>
           </div>
 

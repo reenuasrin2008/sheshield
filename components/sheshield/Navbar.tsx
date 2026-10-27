@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { Shield, MapPin, AlertOctagon, BookOpen, Users, Award, Settings, PhoneCall, Globe, Menu, X } from "lucide-react";
+import { Shield, MapPin, AlertOctagon, BookOpen, Users, Award, Settings, PhoneCall, Globe, Menu, X, Navigation, Flame } from "lucide-react";
 import { SupportedLanguage } from "@/types/sheshield";
 import { getTranslation } from "@/lib/i18n/translations";
 
@@ -52,10 +52,24 @@ export function Navbar({
         {/* Desktop Navigation */}
         <nav className="hidden lg:flex items-center gap-1 text-sm font-medium text-foreground/80">
           <Link
-            href="/#map-section"
+            href="/navigate"
+            className="px-3 py-1.5 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-950/30 hover:text-emerald-600 transition-colors flex items-center gap-1.5"
+          >
+            <Navigation className="w-4 h-4 text-emerald-500" />
+            <span>Safe Route</span>
+          </Link>
+          <Link
+            href="/heatmap"
             className="px-3 py-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/30 hover:text-rose-600 transition-colors flex items-center gap-1.5"
           >
-            <MapPin className="w-4 h-4 text-rose-500" />
+            <Flame className="w-4 h-4 text-rose-500" />
+            <span>Heatmap</span>
+          </Link>
+          <Link
+            href="/#map-section"
+            className="px-3 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-1.5"
+          >
+            <MapPin className="w-4 h-4 text-slate-500" />
             {t.nav_map}
           </Link>
           <Link
@@ -182,11 +196,27 @@ export function Navbar({
       {mobileMenuOpen && (
         <div className="lg:hidden border-b border-border bg-background/98 backdrop-blur-xl px-4 py-4 space-y-2 text-sm shadow-xl animate-in slide-in-from-top-2">
           <Link
+            href="/navigate"
+            onClick={() => setMobileMenuOpen(false)}
+            className="flex items-center gap-2.5 p-2 rounded-xl bg-emerald-500/10 text-emerald-600 font-bold"
+          >
+            <Navigation className="w-4 h-4 text-emerald-500" />
+            <span>Safe Route Navigation</span>
+          </Link>
+          <Link
+            href="/heatmap"
+            onClick={() => setMobileMenuOpen(false)}
+            className="flex items-center gap-2.5 p-2 rounded-xl bg-rose-500/10 text-rose-600 font-bold"
+          >
+            <Flame className="w-4 h-4 text-rose-500" />
+            <span>Safety Heatmap</span>
+          </Link>
+          <Link
             href="/#map-section"
             onClick={() => setMobileMenuOpen(false)}
             className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-muted font-medium text-foreground"
           >
-            <MapPin className="w-4 h-4 text-rose-500" />
+            <MapPin className="w-4 h-4 text-slate-500" />
             <span>{t.nav_map}</span>
           </Link>
           <Link
