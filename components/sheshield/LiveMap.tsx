@@ -11,16 +11,22 @@ import {
   ShieldCheck,
   AlertTriangle,
   Hospital,
-  ShieldAlert,
   Loader2,
   Check,
-  Info,
-  Map as MapIcon,
-  Layers,
-  X
+  X,
+  Volume2,
+  VolumeX,
+  Compass,
+  CornerUpRight,
+  CornerUpLeft,
+  ArrowUp,
+  CheckCircle2,
+  Sparkles,
+  Radio
 } from "lucide-react";
-import { SupportedLanguage, RouteGeometry, AssistanceResource } from "@/types/sheshield";
+import { SupportedLanguage, RouteGeometry, AssistanceResource, MultiRouteResponse } from "@/types/sheshield";
 import { getTranslation } from "@/lib/i18n/translations";
+import { calculateHaversineDistance } from "@/lib/services/geo-provider";
 
 interface LiveMapProps {
   currentLang: SupportedLanguage;
@@ -99,11 +105,13 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
   const mapLibreRef = useRef<maplibregl.Map | null>(null);
   const googleMapRef = useRef<any | null>(null);
   const googleUserMarkerRef = useRef<any | null>(null);
-  const googleRouteLineRef = useRef<any | null>(null);
+  const googleSafeRouteLineRef = useRef<any | null>(null);
+  const googleDangerRouteLineRef = useRef<any | null>(null);
   const googleResourceMarkersRef = useRef<any[]>([]);
 
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const watchIdRef = useRef<number | null>(null);
+  const lastSpokenStepRef = useRef<number>(-1);
 
   const t = getTranslation(currentLang);
 
@@ -119,20 +127,30 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
   const [locationPermissionStatus, setLocationPermissionStatus] = useState<"prompt" | "granted" | "denied">("prompt");
   const [lastLocationTime, setLastLocationTime] = useState<string | null>(null);
 
-  // Search & Routing State
+  // Search & Multi-Route Planning State
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedDestination, setSelectedDestination] = useState<{ name: string; lat: number; lon: number } | null>(null);
+  const [safestRoute, setSafestRoute] = useState<RouteGeometry | null>(null);
+  const [dangerRoute, setDangerRoute] = useState<RouteGeometry | null>(null);
+  const [selectedRouteType, setSelectedRouteType] = useState<"safest" | "danger">("safest");
   const [activeRoute, setActiveRoute] = useState<RouteGeometry | null>(null);
   const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
+
+  // Live Navigation HUD State
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [distanceToDestination, setDistanceToDestination] = useState<number | null>(null);
+  const [voiceGuidanceEnabled, setVoiceGuidanceEnabled] = useState(true);
+  const [hasArrived, setHasArrived] = useState(false);
+  const [followUserMode, setFollowUserMode] = useState(true);
 
   // Layer Toggles
   const [showPolice, setShowPolice] = useState(true);
   const [showHospitals, setShowHospitals] = useState(true);
-  const [showIncidents, setShowIncidents] = useState(true);
 
-  // Share Journey State & Active Session ID (Critical fix for live tracking!)
+  // Share Journey State & Active Session ID
   const [isSharing, setIsSharing] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
@@ -151,52 +169,170 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       .catch(err => console.warn("Could not fetch assistance:", err));
   }, []);
 
-  // 2. Render route on MapLibre
-  const renderRouteOnMapLibre = useCallback((route: RouteGeometry) => {
-    if (!mapLibreRef.current) return;
-    const map = mapLibreRef.current;
-    if (map.getLayer("route-line")) map.removeLayer("route-line");
-    if (map.getSource("route-source")) map.removeSource("route-source");
-
-    map.addSource("route-source", {
-      type: "geojson",
-      data: {
-        type: "Feature",
-        properties: {},
-        geometry: {
-          type: "LineString",
-          coordinates: route.coordinates
-        }
+  // 2. Audio Voice Navigation synthesizer
+  const speakInstruction = useCallback(
+    (text: string) => {
+      if (!voiceGuidanceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+      try {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.lang = currentLang === "hi" ? "hi-IN" : currentLang === "ta" ? "ta-IN" : "en-US";
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
+        console.warn("Speech synthesis error:", e);
       }
-    });
+    },
+    [voiceGuidanceEnabled, currentLang]
+  );
 
-    map.addLayer({
-      id: "route-line",
-      type: "line",
-      source: "route-source",
-      layout: { "line-join": "round", "line-cap": "round" },
-      paint: {
-        "line-color": "#e11d48",
-        "line-width": 5,
-        "line-opacity": 0.85
+  // 3. Render Multi-Routes (Safest Emerald vs Danger Dashed Red) on MapLibre
+  const renderMultiRoutesOnMapLibre = useCallback(
+    (safe: RouteGeometry | null, danger: RouteGeometry | null, selectedType: "safest" | "danger" = "safest") => {
+      if (!mapLibreRef.current) return;
+      const map = mapLibreRef.current;
+
+      // Clean existing route layers
+      ["route-line-safe", "route-line-safe-casing", "route-line-danger"].forEach(layerId => {
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+      });
+      ["safe-route-source", "danger-route-source"].forEach(sourceId => {
+        if (map.getSource(sourceId)) map.removeSource(sourceId);
+      });
+
+      const bounds = new maplibregl.LngLatBounds();
+
+      // Render Danger Route first (underneath or dashed)
+      if (danger && danger.coordinates && danger.coordinates.length > 0) {
+        map.addSource("danger-route-source", {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            properties: {},
+            geometry: { type: "LineString", coordinates: danger.coordinates }
+          }
+        });
+
+        map.addLayer({
+          id: "route-line-danger",
+          type: "line",
+          source: "danger-route-source",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": selectedType === "danger" ? "#ef4444" : "#f87171",
+            "line-width": selectedType === "danger" ? 6 : 4,
+            "line-dasharray": [2, 2],
+            "line-opacity": selectedType === "danger" ? 0.95 : 0.6
+          }
+        });
+
+        danger.coordinates.forEach(c => bounds.extend(c));
       }
-    });
 
-    const bounds = new maplibregl.LngLatBounds();
-    route.coordinates.forEach(c => bounds.extend(c));
-    map.fitBounds(bounds, { padding: 40 });
-  }, []);
+      // Render Safest Guardian Route (Solid Emerald Green)
+      if (safe && safe.coordinates && safe.coordinates.length > 0) {
+        map.addSource("safe-route-source", {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            properties: {},
+            geometry: { type: "LineString", coordinates: safe.coordinates }
+          }
+        });
 
-  // 3. Load Google Maps JS SDK script when requested
+        // Dark casing for high contrast
+        map.addLayer({
+          id: "route-line-safe-casing",
+          type: "line",
+          source: "safe-route-source",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": "#064e3b",
+            "line-width": selectedType === "safest" ? 9 : 6,
+            "line-opacity": selectedType === "safest" ? 0.6 : 0.3
+          }
+        });
+
+        map.addLayer({
+          id: "route-line-safe",
+          type: "line",
+          source: "safe-route-source",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": selectedType === "safest" ? "#10b981" : "#059669",
+            "line-width": selectedType === "safest" ? 6 : 4,
+            "line-opacity": selectedType === "safest" ? 1.0 : 0.6
+          }
+        });
+
+        safe.coordinates.forEach(c => bounds.extend(c));
+      }
+
+      if (!bounds.isEmpty()) {
+        map.fitBounds(bounds, { padding: 45, maxZoom: 16 });
+      }
+    },
+    []
+  );
+
+  // 4. Render Multi-Routes on Google Maps JS SDK
+  const renderMultiRoutesOnGoogleSDK = useCallback(
+    (safe: RouteGeometry | null, danger: RouteGeometry | null) => {
+      if (!googleMapRef.current || !window.google?.maps) return;
+
+      if (googleSafeRouteLineRef.current) googleSafeRouteLineRef.current.setMap(null);
+      if (googleDangerRouteLineRef.current) googleDangerRouteLineRef.current.setMap(null);
+
+      const bounds = new window.google.maps.LatLngBounds();
+
+      // Danger route (Dashed red)
+      if (danger && danger.coordinates) {
+        const dPath = danger.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
+        googleDangerRouteLineRef.current = new window.google.maps.Polyline({
+          path: dPath,
+          geodesic: true,
+          strokeColor: "#ef4444",
+          strokeOpacity: 0.8,
+          strokeWeight: 4,
+          map: googleMapRef.current
+        });
+        dPath.forEach(pt => bounds.extend(pt));
+      }
+
+      // Safe route (Solid emerald green)
+      if (safe && safe.coordinates) {
+        const sPath = safe.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
+        googleSafeRouteLineRef.current = new window.google.maps.Polyline({
+          path: sPath,
+          geodesic: true,
+          strokeColor: "#10b981",
+          strokeOpacity: 0.95,
+          strokeWeight: 6,
+          map: googleMapRef.current
+        });
+        sPath.forEach(pt => bounds.extend(pt));
+      }
+
+      if (!bounds.isEmpty()) {
+        googleMapRef.current.fitBounds(bounds);
+      }
+    },
+    []
+  );
+
+  // 5. Load Google Maps JS SDK script when requested
   const loadGoogleScript = useCallback(async (): Promise<boolean> => {
     if (typeof window === "undefined") return false;
     if (window.google && window.google.maps) return true;
     if (!googleApiKey) return false;
 
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       window.gm_authFailure = () => {
         console.warn("[SheShield] Google Maps API auth failure. Falling back to Google Roadmap.");
-        setGoogleLoadError("Google Maps JS SDK requires an active billing account on your Google Cloud Project. Switched to Google Maps Roadmap tiles.");
+        setGoogleLoadError(
+          "Google Maps JS SDK requires an active billing account on your Google Cloud Project. Switched to Google Maps Roadmap tiles."
+        );
         setMapProvider("google");
         resolve(false);
       };
@@ -228,7 +364,7 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     });
   }, [googleApiKey]);
 
-  // 4. Initialize Map based on mapProvider
+  // 6. Initialize Map based on mapProvider
   useEffect(() => {
     if (!mapContainer.current) return;
     let isCancelled = false;
@@ -268,6 +404,9 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
 
             googleMapRef.current = gMap;
             setIsMapReady(true);
+            if (safestRoute || dangerRoute) {
+              renderMultiRoutesOnGoogleSDK(safestRoute, dangerRoute);
+            }
           } catch (e: any) {
             console.warn("Google Maps JS SDK initialization exception:", e.message);
             setGoogleLoadError("Google Maps JS SDK: " + (e.message || "Failed to initialize"));
@@ -299,17 +438,15 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
         : OSM_STYLE;
 
     if (mapLibreRef.current) {
-      // Smooth dynamic style transition without destroying map state
       mapLibreRef.current.setStyle(targetStyle);
       mapLibreRef.current.once("style.load", () => {
-        if (!isCancelled && activeRoute) {
-          renderRouteOnMapLibre(activeRoute);
+        if (!isCancelled && (safestRoute || dangerRoute)) {
+          renderMultiRoutesOnMapLibre(safestRoute, dangerRoute, selectedRouteType);
         }
       });
       return;
     }
 
-    // Initial MapLibre mount
     const map = new maplibregl.Map({
       container: mapContainer.current!,
       style: targetStyle,
@@ -323,8 +460,8 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       if (!isCancelled) {
         mapLibreRef.current = map;
         setIsMapReady(true);
-        if (activeRoute) {
-          renderRouteOnMapLibre(activeRoute);
+        if (safestRoute || dangerRoute) {
+          renderMultiRoutesOnMapLibre(safestRoute, dangerRoute, selectedRouteType);
         }
       }
     });
@@ -332,9 +469,9 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     return () => {
       isCancelled = true;
     };
-  }, [mapProvider, loadGoogleScript, activeRoute, renderRouteOnMapLibre]);
+  }, [mapProvider, loadGoogleScript, safestRoute, dangerRoute, selectedRouteType, renderMultiRoutesOnMapLibre, renderMultiRoutesOnGoogleSDK]);
 
-  // 4. Update Markers on User Location Changes
+  // 7. Update Markers on User Location Changes
   useEffect(() => {
     if (!userLocation) return;
     const { lat, lon } = userLocation;
@@ -349,7 +486,7 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
           icon: {
             path: window.google.maps.SymbolPath.CIRCLE,
             scale: 9,
-            fillColor: "#e11d48",
+            fillColor: "#10b981",
             fillOpacity: 1,
             strokeColor: "#ffffff",
             strokeWeight: 2.5
@@ -366,10 +503,10 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
         const el = document.createElement("div");
         el.className = "relative flex items-center justify-center";
         el.innerHTML = `
-          <div class="w-6 h-6 rounded-full bg-rose-600 border-2 border-white shadow-xl flex items-center justify-center">
-            <div class="w-2 h-2 rounded-full bg-white"></div>
+          <div class="w-6 h-6 rounded-full bg-emerald-500 border-2 border-white shadow-xl flex items-center justify-center">
+            <div class="w-2.5 h-2.5 rounded-full bg-white animate-pulse"></div>
           </div>
-          <div class="absolute -inset-2 rounded-full bg-rose-500/20 animate-ping pointer-events-none"></div>
+          <div class="absolute -inset-2.5 rounded-full bg-emerald-500/25 animate-ping pointer-events-none"></div>
         `;
         userMarkerRef.current = new maplibregl.Marker({ element: el })
           .setLngLat([lon, lat])
@@ -380,13 +517,11 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     }
   }, [userLocation, mapProvider]);
 
-  // 5. Update Assistance Markers (Police & Hospitals)
+  // 8. Update Assistance Markers (Police & Hospitals)
   useEffect(() => {
     if (!isMapReady) return;
 
-    // Google Maps JS SDK Assistance Markers
     if (mapProvider === "google-sdk" && googleMapRef.current && window.google?.maps) {
-      // Clear old markers
       googleResourceMarkersRef.current.forEach(m => m.setMap(null));
       googleResourceMarkersRef.current = [];
 
@@ -414,7 +549,7 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
             <div style="font-family:sans-serif;padding:4px;font-size:12px;color:#1e293b;">
               <strong style="font-size:13px;">${res.name}</strong><br/>
               <span style="color:#64748b;">${res.address || "24/7 Assistance"}</span><br/>
-              ${res.phone_number ? `<a href="tel:${res.phone_number}" style="color:#e11d48;font-weight:bold;">Call: ${res.phone_number}</a>` : ""}
+              ${res.phone_number ? `<a href="tel:${res.phone_number}" style="color:#10b981;font-weight:bold;">Call: ${res.phone_number}</a>` : ""}
             </div>
           `
         });
@@ -427,7 +562,6 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       });
     }
 
-    // MapLibre Assistance Markers (Google Roadmap, Satellite, OSM)
     if (mapProvider !== "google-sdk" && mapLibreRef.current) {
       const markers: maplibregl.Marker[] = [];
       assistanceResources.forEach(res => {
@@ -472,7 +606,7 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     }
   }, [assistanceResources, showPolice, showHospitals, mapProvider, isMapReady]);
 
-  // 6. Request Current Device Location
+  // 9. Request Current Device Location
   const requestCurrentLocation = useCallback(() => {
     if (!navigator.geolocation) {
       alert("Geolocation is not supported on this device/browser");
@@ -486,13 +620,11 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
         setLocationPermissionStatus("granted");
         setLastLocationTime(new Date().toLocaleTimeString());
 
-        // Recenter Google Map JS SDK
         if (mapProvider === "google-sdk" && googleMapRef.current) {
           googleMapRef.current.panTo({ lat: latitude, lng: longitude });
           googleMapRef.current.setZoom(15);
         }
 
-        // Recenter MapLibre (Roadmap, Satellite, OSM)
         if (mapProvider !== "google-sdk" && mapLibreRef.current) {
           mapLibreRef.current.flyTo({ center: [longitude, latitude], zoom: 15 });
         }
@@ -511,8 +643,8 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     requestCurrentLocation();
   }, [requestCurrentLocation]);
 
-  // 7. Start / Stop Live GPS Tracking (With session synchronization!)
-  const toggleLiveTracking = () => {
+  // 10. Start / Stop Live GPS Tracking (With session synchronization!)
+  const toggleLiveTracking = useCallback(() => {
     if (isTracking) {
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
@@ -528,7 +660,6 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
           setUserLocation({ lat: latitude, lon: longitude, accuracy });
           setLastLocationTime(new Date().toLocaleTimeString());
 
-          // Send coordinates to backend with active session ID if sharing is active
           if (activeSessionId) {
             fetch("/api/location/update", {
               method: "POST",
@@ -551,10 +682,10 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       watchIdRef.current = id;
       setIsTracking(true);
     }
-  };
+  }, [isTracking, activeSessionId]);
 
-  // 8. Start / Stop Live Sharing Session (Generates real shareable link)
-  const handleStartSharing = async () => {
+  // 11. Start / Stop Live Sharing Session (Generates real shareable link)
+  const handleStartSharing = useCallback(async () => {
     try {
       const res = await fetch("/api/location/share", {
         method: "POST",
@@ -575,12 +706,10 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
         setCurrentShareUrl(fullUrl);
         if (onShareSessionCreated) onShareSessionCreated(fullUrl);
 
-        // Ensure tracking is active immediately
         if (!isTracking) {
           toggleLiveTracking();
         }
 
-        // Push initial coordinate
         if (userLocation) {
           fetch("/api/location/update", {
             method: "POST",
@@ -601,7 +730,7 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     } catch {
       alert("Could not update sharing session");
     }
-  };
+  }, [isSharing, activeSessionId, isTracking, toggleLiveTracking, userLocation, onShareSessionCreated]);
 
   const copyShareLink = () => {
     if (currentShareUrl) {
@@ -611,7 +740,16 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     }
   };
 
-  // 9. Destination Search & Route Planning
+  const shareViaWhatsApp = () => {
+    const url = currentShareUrl || `${window.location.origin}/track/${activeSessionId || "live"}`;
+    const destinationText = selectedDestination?.name ? ` towards ${selectedDestination.name}` : "";
+    const text = encodeURIComponent(
+      `🛡️ SheShield Live Safe Navigation:\nI am navigating safely${destinationText} via the AI Guardian Safe Route (0 cases filed).\n\nTrack my live journey in real-time here:\n${url}`
+    );
+    window.open(`https://api.whatsapp.com/send?text=${text}`, "_blank");
+  };
+
+  // 12. Destination Search & Route Planning (Computes both Safest Route & Danger Route)
   const handleSearch = async (queryText: string) => {
     setSearchQuery(queryText);
     if (queryText.trim().length < 2) {
@@ -638,6 +776,9 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
       lon: dest.longitude
     });
     setSearchResults([]);
+    setIsNavigating(false);
+    setHasArrived(false);
+    lastSpokenStepRef.current = -1;
 
     if (!userLocation) {
       alert("Please allow current location to calculate a walking route.");
@@ -658,37 +799,19 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
 
       if (!res.ok) throw new Error("Route calculation failed");
 
-      const route: RouteGeometry = await res.json();
-      setActiveRoute(route);
+      const data: MultiRouteResponse = await res.json();
+      const safe = data.safestRoute || (data as unknown as RouteGeometry);
+      const danger = data.dangerRoute || null;
 
-      // Render on Google Maps JS SDK
-      if (mapProvider === "google-sdk" && googleMapRef.current && window.google?.maps) {
-        if (googleRouteLineRef.current) {
-          googleRouteLineRef.current.setMap(null);
-        }
+      setSafestRoute(safe);
+      setDangerRoute(danger);
+      setActiveRoute(safe);
+      setSelectedRouteType("safest");
 
-        const path = route.coordinates.map(coord => ({
-          lat: coord[1],
-          lng: coord[0]
-        }));
-
-        googleRouteLineRef.current = new window.google.maps.Polyline({
-          path,
-          geodesic: true,
-          strokeColor: "#e11d48",
-          strokeOpacity: 0.9,
-          strokeWeight: 5,
-          map: googleMapRef.current
-        });
-
-        const bounds = new window.google.maps.LatLngBounds();
-        path.forEach(pt => bounds.extend(pt));
-        googleMapRef.current.fitBounds(bounds);
-      }
-
-      // Render on MapLibre (Roadmap, Satellite, OSM)
-      if (mapProvider !== "google-sdk" && mapLibreRef.current) {
-        renderRouteOnMapLibre(route);
+      if (mapProvider === "google-sdk") {
+        renderMultiRoutesOnGoogleSDK(safe, danger);
+      } else {
+        renderMultiRoutesOnMapLibre(safe, danger, "safest");
       }
     } catch (err: any) {
       alert(err.message || "Failed to calculate route");
@@ -697,8 +820,135 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
     }
   };
 
+  // 13. Select Route Type (Safest vs Danger)
+  const handleSelectRouteType = (type: "safest" | "danger") => {
+    setSelectedRouteType(type);
+    const chosen = type === "safest" ? safestRoute : dangerRoute;
+    if (chosen) {
+      setActiveRoute(chosen);
+      if (mapProvider === "google-sdk") {
+        renderMultiRoutesOnGoogleSDK(safestRoute, dangerRoute);
+      } else {
+        renderMultiRoutesOnMapLibre(safestRoute, dangerRoute, type);
+      }
+    }
+  };
+
+  // 14. Start Live Safe Turn-by-Turn Navigation
+  const startLiveNavigation = async () => {
+    if (!activeRoute || !selectedDestination) return;
+    setIsNavigating(true);
+    setCurrentStepIndex(0);
+    setHasArrived(false);
+    setFollowUserMode(true);
+    lastSpokenStepRef.current = -1;
+
+    if (!isTracking) {
+      toggleLiveTracking();
+    }
+
+    if (!isSharing) {
+      handleStartSharing();
+    }
+
+    const firstInstruction = activeRoute.instructions?.[0]?.text || "Head towards your destination";
+    const startMsg = `Starting safe navigation to ${selectedDestination.name.split(",")[0]}. Safe corridor active with fewer incidents filed. ${firstInstruction}`;
+    speakInstruction(startMsg);
+
+    if (userLocation && mapLibreRef.current) {
+      mapLibreRef.current.easeTo({
+        center: [userLocation.lon, userLocation.lat],
+        zoom: 17,
+        pitch: 45,
+        duration: 1200
+      });
+    }
+  };
+
+  // 15. End Live Navigation
+  const endLiveNavigation = () => {
+    setIsNavigating(false);
+    setHasArrived(false);
+    lastSpokenStepRef.current = -1;
+    if (mapLibreRef.current) {
+      mapLibreRef.current.easeTo({ pitch: 0, zoom: 14, duration: 1000 });
+    }
+  };
+
+  // 16. Continuous Navigation Loop (Progress tracking, step advancement, arrival detection)
+  useEffect(() => {
+    if (!isNavigating || !userLocation || !selectedDestination) return;
+
+    const dist = calculateHaversineDistance(
+      userLocation.lat,
+      userLocation.lon,
+      selectedDestination.lat,
+      selectedDestination.lon
+    );
+    setDistanceToDestination(dist);
+
+    // Arrival detection: Within 40 meters
+    if (dist <= 40 && !hasArrived) {
+      setHasArrived(true);
+      speakInstruction("You have safely arrived at your destination!");
+      return;
+    }
+
+    // Follow camera mode
+    if (followUserMode) {
+      if (mapLibreRef.current) {
+        mapLibreRef.current.easeTo({
+          center: [userLocation.lon, userLocation.lat],
+          zoom: 17,
+          duration: 1000
+        });
+      } else if (googleMapRef.current) {
+        googleMapRef.current.panTo({ lat: userLocation.lat, lng: userLocation.lon });
+      }
+    }
+
+    // Dynamic Step Advancement & Speech Announcement
+    if (activeRoute?.instructions && activeRoute.instructions.length > 0) {
+      if (lastSpokenStepRef.current !== currentStepIndex) {
+        const inst = activeRoute.instructions[currentStepIndex];
+        if (inst) {
+          speakInstruction(inst.text);
+          lastSpokenStepRef.current = currentStepIndex;
+        }
+      }
+
+      if (currentStepIndex < activeRoute.instructions.length - 1) {
+        const totalInstructions = activeRoute.instructions.length;
+        const totalDistance = activeRoute.distance_meters;
+        const expectedRemainingDistance = totalDistance * (1 - (currentStepIndex + 1) / totalInstructions);
+
+        if (dist <= expectedRemainingDistance + 50) {
+          setCurrentStepIndex(prev => Math.min(prev + 1, totalInstructions - 1));
+        }
+      }
+    }
+  }, [
+    isNavigating,
+    userLocation,
+    selectedDestination,
+    activeRoute,
+    currentStepIndex,
+    hasArrived,
+    followUserMode,
+    speakInstruction
+  ]);
+
+  // Maneuver icon helper
+  const renderManeuverIcon = (instructionText: string) => {
+    const lower = instructionText.toLowerCase();
+    if (lower.includes("left")) return <CornerUpLeft className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-400 shrink-0" />;
+    if (lower.includes("right")) return <CornerUpRight className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-400 shrink-0" />;
+    if (lower.includes("arrive") || lower.includes("destination")) return <CheckCircle2 className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-400 shrink-0" />;
+    return <ArrowUp className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-400 shrink-0" />;
+  };
+
   return (
-    <div className="relative w-full h-[440px] sm:h-[540px] md:h-[620px] rounded-3xl overflow-hidden border border-border shadow-xl bg-slate-900 text-foreground">
+    <div className="relative w-full h-[480px] sm:h-[560px] md:h-[640px] rounded-3xl overflow-hidden border border-border shadow-2xl bg-slate-950 text-foreground">
       {/* Map Canvas */}
       <div ref={mapContainer} className="w-full h-full" />
 
@@ -734,244 +984,441 @@ export function LiveMap({ currentLang, onShareSessionCreated }: LiveMapProps) {
         </div>
       )}
 
-      {/* Top Floating Bar: Provider Switcher & Destination Search */}
-      <div className="absolute top-3 left-3 right-3 sm:right-auto z-20 flex flex-col gap-2 w-[calc(100vw-24px)] max-w-sm sm:max-w-md">
-        {/* Search Input Box */}
-        <div className="relative">
-          <div className="relative flex items-center bg-background/95 backdrop-blur-md rounded-2xl border border-border/80 shadow-lg px-3 py-2 text-xs sm:text-sm">
-            <Search className="w-4 h-4 text-muted-foreground mr-2 shrink-0" />
-            <input
-              type="text"
-              placeholder={t.map_search_placeholder}
-              value={searchQuery}
-              onChange={e => handleSearch(e.target.value)}
-              className="bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground text-xs"
-            />
-            {isSearching && <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-500 shrink-0 ml-1" />}
-          </div>
-
-          {/* Autocomplete Results */}
-          {searchResults.length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-background/95 backdrop-blur-xl border border-border rounded-2xl shadow-2xl overflow-hidden z-30 max-h-52 overflow-y-auto divide-y divide-border/40">
-              {searchResults.map((result, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => handleSelectDestination(result)}
-                  className="w-full text-left px-3 py-2.5 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors text-xs text-foreground flex items-start gap-2"
-                >
-                  <Navigation className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
-                  <span className="line-clamp-2 leading-snug">{result.place_name}</span>
-                </button>
-              ))}
+      {/* 1. TOP BAR: Destination Search & Layer Controls (Hidden during full Navigation HUD) */}
+      {!isNavigating && (
+        <div className="absolute top-3 left-3 right-3 sm:right-auto z-20 flex flex-col gap-2 w-[calc(100vw-24px)] max-w-sm sm:max-w-md">
+          {/* Search Input Box */}
+          <div className="relative">
+            <div className="relative flex items-center bg-background/95 backdrop-blur-md rounded-2xl border border-border/80 shadow-lg px-3 py-2 text-xs sm:text-sm">
+              <Search className="w-4 h-4 text-muted-foreground mr-2 shrink-0" />
+              <input
+                type="text"
+                placeholder={t.map_search_placeholder}
+                value={searchQuery}
+                onChange={e => handleSearch(e.target.value)}
+                className="bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground text-xs"
+              />
+              {(isSearching || isCalculatingRoute) && (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500 shrink-0 ml-1" />
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Quick Map Controls Row: Provider Switcher & Safety Layer Toggles */}
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
-          {/* Provider Pill */}
-          <div className="flex items-center bg-background/90 backdrop-blur-md p-1 rounded-xl border border-border text-[10px] font-bold shrink-0">
-            <button
-              onClick={() => {
-                setGoogleLoadError(null);
-                setMapProvider("google");
-              }}
-              className={`px-2 py-1 rounded-lg transition-all ${
-                mapProvider === "google"
-                  ? "bg-rose-600 text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Google Maps
-            </button>
-            <button
-              onClick={() => {
-                setGoogleLoadError(null);
-                setMapProvider("google-satellite");
-              }}
-              className={`px-2 py-1 rounded-lg transition-all ${
-                mapProvider === "google-satellite"
-                  ? "bg-emerald-600 text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Satellite
-            </button>
-            <button
-              onClick={() => {
-                setGoogleLoadError(null);
-                setMapProvider("osm");
-              }}
-              className={`px-2 py-1 rounded-lg transition-all ${
-                mapProvider === "osm"
-                  ? "bg-slate-700 text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              OSM
-            </button>
-            {googleApiKey && (
-              <button
-                onClick={() => setMapProvider("google-sdk")}
-                title="Direct Google Maps JavaScript API (Requires Cloud Billing)"
-                className={`px-2 py-1 rounded-lg transition-all ${
-                  mapProvider === "google-sdk"
-                    ? "bg-amber-600 text-white shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                JS SDK
-              </button>
+            {/* Autocomplete Results */}
+            {searchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-background/95 backdrop-blur-xl border border-border rounded-2xl shadow-2xl overflow-hidden z-30 max-h-52 overflow-y-auto divide-y divide-border/40">
+                {searchResults.map((result, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleSelectDestination(result)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-emerald-500/10 transition-colors text-xs text-foreground flex items-start gap-2"
+                  >
+                    <Navigation className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
+                    <span className="line-clamp-2 leading-snug">{result.place_name}</span>
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 
-          {/* Layer toggles */}
+          {/* Quick Map Controls Row: Provider Switcher & Safety Layer Toggles */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+            <div className="flex items-center bg-background/90 backdrop-blur-md p-1 rounded-xl border border-border text-[10px] font-bold shrink-0">
+              <button
+                onClick={() => {
+                  setGoogleLoadError(null);
+                  setMapProvider("google");
+                }}
+                className={`px-2 py-1 rounded-lg transition-all ${
+                  mapProvider === "google"
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Google Maps
+              </button>
+              <button
+                onClick={() => {
+                  setGoogleLoadError(null);
+                  setMapProvider("google-satellite");
+                }}
+                className={`px-2 py-1 rounded-lg transition-all ${
+                  mapProvider === "google-satellite"
+                    ? "bg-emerald-600 text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Satellite
+              </button>
+              <button
+                onClick={() => {
+                  setGoogleLoadError(null);
+                  setMapProvider("osm");
+                }}
+                className={`px-2 py-1 rounded-lg transition-all ${
+                  mapProvider === "osm"
+                    ? "bg-slate-700 text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                OSM
+              </button>
+              {googleApiKey && (
+                <button
+                  onClick={() => setMapProvider("google-sdk")}
+                  title="Direct Google Maps JavaScript API (Requires Cloud Billing)"
+                  className={`px-2 py-1 rounded-lg transition-all ${
+                    mapProvider === "google-sdk"
+                      ? "bg-amber-600 text-white shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  JS SDK
+                </button>
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowPolice(!showPolice)}
+              className={`px-2 py-1 rounded-xl text-[10px] font-semibold flex items-center gap-1 backdrop-blur-md border border-border transition-all shrink-0 ${
+                showPolice ? "bg-blue-600 text-white border-blue-600" : "bg-background/80 text-muted-foreground"
+              }`}
+            >
+              <ShieldCheck className="w-3 h-3" />
+              <span>Police</span>
+            </button>
+            <button
+              onClick={() => setShowHospitals(!showHospitals)}
+              className={`px-2 py-1 rounded-xl text-[10px] font-semibold flex items-center gap-1 backdrop-blur-md border border-border transition-all shrink-0 ${
+                showHospitals ? "bg-red-600 text-white border-red-600" : "bg-background/80 text-muted-foreground"
+              }`}
+            >
+              <Hospital className="w-3 h-3" />
+              <span>Hospital</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 2. TURN-BY-TURN LIVE NAVIGATION HUD (Displayed when isNavigating === true) */}
+      {isNavigating && activeRoute && (
+        <div className="absolute top-3 left-3 right-3 z-30 flex flex-col gap-2 max-w-lg mx-auto animate-in slide-in-from-top-4 duration-300">
+          {/* Top Maneuver Instruction Banner */}
+          <div className="bg-slate-900/95 backdrop-blur-xl border border-emerald-500/50 p-3.5 rounded-2xl shadow-2xl text-white">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 bg-emerald-500/20 border border-emerald-500/40 rounded-xl">
+                  {renderManeuverIcon(
+                    activeRoute.instructions?.[currentStepIndex]?.text || "Continue"
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 uppercase tracking-wider">
+                      Step {currentStepIndex + 1} of {activeRoute.instructions?.length || 1}
+                    </span>
+                    <span className="text-[10px] text-emerald-300 font-semibold flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                      0 Cases Filed Corridor
+                    </span>
+                  </div>
+                  <h3 className="font-extrabold text-sm sm:text-base leading-snug mt-1 text-white">
+                    {activeRoute.instructions?.[currentStepIndex]?.text || "Proceed along safe corridor"}
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    {activeRoute.instructions?.[currentStepIndex]?.distance_meters
+                      ? `${activeRoute.instructions[currentStepIndex].distance_meters}m on this road`
+                      : "Follow route"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Voice Guidance Toggle */}
+              <button
+                onClick={() => setVoiceGuidanceEnabled(!voiceGuidanceEnabled)}
+                title={voiceGuidanceEnabled ? "Mute Voice Guidance" : "Enable Voice Guidance"}
+                className={`p-2 rounded-xl border transition-all ${
+                  voiceGuidanceEnabled
+                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                    : "bg-slate-800 text-slate-400 border-slate-700"
+                }`}
+              >
+                {voiceGuidanceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </button>
+            </div>
+
+            {/* Live Distance & ETA Status Sub-bar */}
+            <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-300">
+              <div className="flex items-center gap-3">
+                <div>
+                  <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-bold">Remaining</span>
+                  <span className="font-extrabold text-emerald-400 text-sm">
+                    {distanceToDestination !== null
+                      ? distanceToDestination > 1000
+                        ? `${(distanceToDestination / 1000).toFixed(2)} km`
+                        : `${distanceToDestination} m`
+                      : `${(activeRoute.distance_meters / 1000).toFixed(2)} km`}
+                  </span>
+                </div>
+                <div className="w-px h-6 bg-slate-800" />
+                <div>
+                  <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-bold">Est. Time</span>
+                  <span className="font-extrabold text-white text-sm">
+                    {Math.ceil(activeRoute.duration_seconds / 60)} mins
+                  </span>
+                </div>
+              </div>
+
+              {/* Follow Camera Switch */}
+              <button
+                onClick={() => setFollowUserMode(!followUserMode)}
+                className={`px-2.5 py-1 rounded-xl text-[10px] font-bold flex items-center gap-1.5 transition-all ${
+                  followUserMode
+                    ? "bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20"
+                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                }`}
+              >
+                <Compass className={`w-3.5 h-3.5 ${followUserMode ? "animate-spin" : ""}`} />
+                <span>{followUserMode ? "Lock Cam" : "Free Cam"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. ROUTE COMPARISON & SAFETY GUARDIAN CARD (Before Navigation, after selecting destination) */}
+      {!isNavigating && activeRoute && (
+        <div className="absolute bottom-16 left-3 right-3 sm:left-auto sm:right-3 z-30 sm:w-[420px] max-h-[50vh] overflow-y-auto bg-slate-900/95 backdrop-blur-2xl border border-slate-800 p-3.5 rounded-3xl shadow-2xl text-xs animate-in slide-in-from-bottom-4 duration-300">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2.5">
+            <div>
+              <div className="flex items-center gap-1.5 text-emerald-400 text-[10px] font-extrabold uppercase tracking-wider">
+                <Sparkles className="w-3 h-3" />
+                <span>AI Route Guardian</span>
+              </div>
+              <p className="font-extrabold text-sm text-white truncate max-w-[220px]">
+                {selectedDestination?.name}
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                setActiveRoute(null);
+                setSafestRoute(null);
+                setDangerRoute(null);
+                setSelectedDestination(null);
+              }}
+              className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Interactive Route Selection Cards */}
+          <div className="space-y-2 mb-3">
+            {/* 1. SAFEST ROUTE (Recommended) */}
+            {safestRoute && (
+              <div
+                onClick={() => handleSelectRouteType("safest")}
+                className={`p-3 rounded-2xl border cursor-pointer transition-all ${
+                  selectedRouteType === "safest"
+                    ? "bg-emerald-950/40 border-emerald-500 shadow-lg shadow-emerald-950/30"
+                    : "bg-slate-800/40 border-slate-700/60 hover:border-slate-600 opacity-75"
+                }`}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center shrink-0">
+                      {selectedRouteType === "safest" ? (
+                        <Check className="w-2.5 h-2.5 text-slate-950 stroke-[3]" />
+                      ) : (
+                        <div className="w-2 h-2 rounded-full bg-slate-950" />
+                      )}
+                    </div>
+                    <div>
+                      <span className="font-extrabold text-white text-xs block">
+                        Safest Guardian Route
+                      </span>
+                      <span className="text-[10px] text-emerald-400 font-semibold">
+                        0 Cases Filed • High Lighting & Police En Route
+                      </span>
+                    </div>
+                  </div>
+
+                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 font-extrabold text-[10px]">
+                    Safety {safestRoute.safety_score?.overall_score || 94}/100
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3 mt-2 text-[11px] text-slate-300 pl-6">
+                  <span>{(safestRoute.distance_meters / 1000).toFixed(2)} km</span>
+                  <span>•</span>
+                  <span>{Math.ceil(safestRoute.duration_seconds / 60)} mins</span>
+                  <span>•</span>
+                  <span className="text-emerald-400 font-bold">Solid Green Line</span>
+                </div>
+              </div>
+            )}
+
+            {/* 2. DANGER / HIGHER RISK ROUTE */}
+            {dangerRoute && (
+              <div
+                onClick={() => handleSelectRouteType("danger")}
+                className={`p-3 rounded-2xl border cursor-pointer transition-all ${
+                  selectedRouteType === "danger"
+                    ? "bg-rose-950/40 border-rose-500 shadow-lg shadow-rose-950/30"
+                    : "bg-slate-800/40 border-slate-700/60 hover:border-slate-600 opacity-75"
+                }`}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 rounded-full bg-rose-500 flex items-center justify-center shrink-0">
+                      {selectedRouteType === "danger" ? (
+                        <Check className="w-2.5 h-2.5 text-white stroke-[3]" />
+                      ) : (
+                        <div className="w-2 h-2 rounded-full bg-slate-950" />
+                      )}
+                    </div>
+                    <div>
+                      <span className="font-extrabold text-rose-300 text-xs block">
+                        Direct / Higher Risk Route
+                      </span>
+                      <span className="text-[10px] text-rose-400 font-semibold">
+                        {dangerRoute.safety_score?.factors.recent_reports_count
+                          ? `${dangerRoute.safety_score.factors.recent_reports_count} Safety Incident(s) Reported`
+                          : "Unverified back alleys • Low lighting"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 font-extrabold text-[10px]">
+                    Safety {dangerRoute.safety_score?.overall_score || 45}/100
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3 mt-2 text-[11px] text-slate-300 pl-6">
+                  <span>{(dangerRoute.distance_meters / 1000).toFixed(2)} km</span>
+                  <span>•</span>
+                  <span>{Math.ceil(dangerRoute.duration_seconds / 60)} mins</span>
+                  <span>•</span>
+                  <span className="text-rose-400 font-bold">Dashed Red Line</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Action CTA: Start Live Safe Navigation */}
           <button
-            onClick={() => setShowPolice(!showPolice)}
-            className={`px-2 py-1 rounded-xl text-[10px] font-semibold flex items-center gap-1 backdrop-blur-md border border-border transition-all shrink-0 ${
-              showPolice ? "bg-blue-600 text-white border-blue-600" : "bg-background/80 text-muted-foreground"
-            }`}
+            onClick={startLiveNavigation}
+            className="w-full py-2.5 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-extrabold text-xs shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
           >
-            <ShieldCheck className="w-3 h-3" />
-            <span>Police</span>
-          </button>
-          <button
-            onClick={() => setShowHospitals(!showHospitals)}
-            className={`px-2 py-1 rounded-xl text-[10px] font-semibold flex items-center gap-1 backdrop-blur-md border border-border transition-all shrink-0 ${
-              showHospitals ? "bg-red-600 text-white border-red-600" : "bg-background/80 text-muted-foreground"
-            }`}
-          >
-            <Hospital className="w-3 h-3" />
-            <span>24/7 Hospital</span>
+            <Navigation className="w-4 h-4 fill-white" />
+            <span>Start Live Safe Navigation</span>
           </button>
         </div>
-      </div>
+      )}
 
-      {/* Floating Bottom Action Dock */}
+      {/* 4. ARRIVAL CELEBRATION MODAL */}
+      {hasArrived && (
+        <div className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-slate-900 border border-emerald-500/50 p-6 rounded-3xl max-w-sm w-full text-center shadow-2xl">
+            <div className="w-14 h-14 rounded-full bg-emerald-500/20 border border-emerald-500 flex items-center justify-center mx-auto mb-3">
+              <CheckCircle2 className="w-8 h-8 text-emerald-400 animate-bounce" />
+            </div>
+            <h2 className="text-lg font-extrabold text-white">You Have Arrived Safely!</h2>
+            <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+              You reached your destination via the AI Guardian Safe Corridor. Guardians and contacts can now see you are safe.
+            </p>
+            <div className="mt-5 space-y-2">
+              <button
+                onClick={endLiveNavigation}
+                className="w-full py-2.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg transition-all"
+              >
+                End Journey (I am Safe)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. FLOATING BOTTOM ACTION DOCK */}
       <div className="absolute bottom-3 left-3 right-3 z-20 flex items-center justify-between gap-2 pointer-events-none">
-        {/* Recenter & Live Tracking */}
+        {/* Recenter & Live Tracking (or Exit Navigation during Nav) */}
         <div className="flex items-center gap-2 pointer-events-auto">
-          <button
-            onClick={requestCurrentLocation}
-            title={t.map_recenter}
-            className="p-2.5 rounded-2xl bg-background/95 backdrop-blur-md border border-border shadow-lg hover:bg-background text-foreground"
-            aria-label="Recenter Map"
-          >
-            <Crosshair className="w-4 h-4 text-rose-600" />
-          </button>
+          {isNavigating ? (
+            <button
+              onClick={endLiveNavigation}
+              className="px-3 py-2 rounded-2xl bg-rose-600/90 text-white text-xs font-bold shadow-lg hover:bg-rose-600 flex items-center gap-1.5"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Exit Navigation</span>
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={requestCurrentLocation}
+                title={t.map_recenter}
+                className="p-2.5 rounded-2xl bg-background/95 backdrop-blur-md border border-border shadow-lg hover:bg-background text-foreground"
+                aria-label="Recenter Map"
+              >
+                <Crosshair className="w-4 h-4 text-emerald-500" />
+              </button>
 
-          <button
-            onClick={toggleLiveTracking}
-            className={`px-3 py-2 rounded-2xl text-xs font-bold shadow-lg backdrop-blur-md flex items-center gap-1.5 transition-all ${
-              isTracking
-                ? "bg-rose-600 text-white animate-pulse"
-                : "bg-background/95 text-foreground border border-border hover:bg-background"
-            }`}
-          >
-            <div className={`w-2 h-2 rounded-full ${isTracking ? "bg-white" : "bg-emerald-500"}`} />
-            <span>{isTracking ? "Stop Tracking" : "Live GPS Tracking"}</span>
-          </button>
+              <button
+                onClick={toggleLiveTracking}
+                className={`px-3 py-2 rounded-2xl text-xs font-bold shadow-lg backdrop-blur-md flex items-center gap-1.5 transition-all ${
+                  isTracking
+                    ? "bg-emerald-600 text-white animate-pulse"
+                    : "bg-background/95 text-foreground border border-border hover:bg-background"
+                }`}
+              >
+                <div className={`w-2 h-2 rounded-full ${isTracking ? "bg-white" : "bg-emerald-500"}`} />
+                <span>{isTracking ? "Tracking Active" : "Live GPS Tracking"}</span>
+              </button>
+            </>
+          )}
         </div>
 
-        {/* Live Journey Share Button */}
-        <div className="flex items-center gap-2 pointer-events-auto">
+        {/* Live Journey Share Buttons (WhatsApp & Copy Link) */}
+        <div className="flex items-center gap-1.5 pointer-events-auto">
+          {/* 1-Tap WhatsApp Share */}
+          <button
+            onClick={shareViaWhatsApp}
+            title="Share Live Safe Journey on WhatsApp"
+            className="px-2.5 sm:px-3 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg flex items-center gap-1.5 transition-all"
+          >
+            <Radio className="w-3.5 h-3.5 animate-pulse" />
+            <span className="hidden sm:inline">WhatsApp Share</span>
+            <span className="sm:hidden">Share</span>
+          </button>
+
+          {/* Copy Link */}
           {currentShareUrl ? (
             <button
               onClick={copyShareLink}
-              className="px-3 py-2 rounded-2xl bg-emerald-600 text-white text-xs font-semibold shadow-lg flex items-center gap-1.5"
+              className="px-2.5 sm:px-3 py-2 rounded-2xl bg-slate-800 text-white text-xs font-semibold shadow-lg flex items-center gap-1.5 hover:bg-slate-700"
             >
-              {shareLinkCopied ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
+              {shareLinkCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Share2 className="w-3.5 h-3.5" />}
               <span className="hidden sm:inline">{shareLinkCopied ? "Link Copied!" : "Copy Link"}</span>
-              <span className="sm:hidden">{shareLinkCopied ? "Copied" : "Share"}</span>
+              <span className="sm:hidden">{shareLinkCopied ? "Copied" : "Link"}</span>
             </button>
           ) : (
             <button
               onClick={handleStartSharing}
-              className="px-3 py-2 rounded-2xl bg-background/95 backdrop-blur-md border border-border shadow-lg text-foreground text-xs font-semibold hover:bg-background flex items-center gap-1.5"
+              className="px-2.5 sm:px-3 py-2 rounded-2xl bg-background/95 backdrop-blur-md border border-border shadow-lg text-foreground text-xs font-semibold hover:bg-background flex items-center gap-1.5"
             >
-              <Share2 className="w-3.5 h-3.5 text-indigo-500" />
-              <span className="hidden sm:inline">Share Journey</span>
+              <Share2 className="w-3.5 h-3.5 text-emerald-500" />
+              <span className="hidden sm:inline">Start Sharing</span>
               <span className="sm:hidden">Share</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* GPS Accuracy & Last Update Badge (Top Right) */}
-      {userLocation && (
+      {/* GPS Accuracy & Last Update Badge (Top Right when not navigating) */}
+      {userLocation && !isNavigating && (
         <div className="hidden sm:flex absolute top-3 right-3 z-10 items-center gap-1.5 bg-background/90 backdrop-blur-md px-2.5 py-1 rounded-xl border border-border text-[10px] text-muted-foreground shadow-sm">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
           <span>GPS Accuracy: ±{Math.round(userLocation.accuracy || 10)}m</span>
           {lastLocationTime && <span>• {lastLocationTime}</span>}
-        </div>
-      )}
-
-      {/* Active Route & Predictive Safety Assessment Card */}
-      {activeRoute && (
-        <div className="absolute bottom-16 left-3 right-3 sm:left-auto sm:right-3 z-30 sm:w-96 max-h-[45vh] overflow-y-auto bg-background/95 backdrop-blur-xl border border-border p-3.5 rounded-2xl shadow-2xl text-xs animate-in slide-in-from-bottom-4">
-          <div className="flex items-start justify-between border-b border-border/60 pb-2.5 mb-2">
-            <div>
-              <p className="font-bold text-xs sm:text-sm text-foreground">Safe Walking Route</p>
-              <p className="text-muted-foreground text-[10px] sm:text-[11px] truncate max-w-[180px]">
-                {selectedDestination?.name}
-              </p>
-            </div>
-            {/* Safety Score Badge */}
-            {activeRoute.safety_score && (
-              <div
-                className={`px-2 py-0.5 rounded-xl font-bold flex items-center gap-1 text-[10px] ${
-                  activeRoute.safety_score.risk_level === "low"
-                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
-                    : activeRoute.safety_score.risk_level === "moderate"
-                    ? "bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300"
-                    : activeRoute.safety_score.risk_level === "insufficient_data"
-                    ? "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300"
-                    : "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
-                }`}
-              >
-                <ShieldCheck className="w-3 h-3" />
-                <span>
-                  {activeRoute.safety_score.risk_level === "insufficient_data"
-                    ? "Standard Route"
-                    : `Safety ${activeRoute.safety_score.overall_score}/100`}
-                </span>
-              </div>
-            )}
-          </div>
-
-          {/* Metrics */}
-          <div className="grid grid-cols-2 gap-2 mb-2">
-            <div className="bg-muted/50 p-1.5 rounded-xl text-center">
-              <span className="text-[9px] text-muted-foreground uppercase font-medium">Distance</span>
-              <p className="font-bold text-xs text-foreground">
-                {(activeRoute.distance_meters / 1000).toFixed(2)} km
-              </p>
-            </div>
-            <div className="bg-muted/50 p-1.5 rounded-xl text-center">
-              <span className="text-[9px] text-muted-foreground uppercase font-medium">ETA</span>
-              <p className="font-bold text-xs text-foreground">
-                {Math.ceil(activeRoute.duration_seconds / 60)} mins
-              </p>
-            </div>
-          </div>
-
-          {/* Explainable Risk Factors */}
-          {activeRoute.safety_score && (
-            <div className="bg-muted/30 p-2 rounded-xl border border-border/50 text-[10px] space-y-1 mb-2">
-              <div className="flex items-start gap-1 text-foreground/90">
-                <Info className="w-3 h-3 text-rose-500 shrink-0 mt-0.5" />
-                <p className="leading-snug">{activeRoute.safety_score.explanation}</p>
-              </div>
-            </div>
-          )}
-
-          {/* Next Navigation Instruction */}
-          {activeRoute.instructions.length > 0 && (
-            <div className="text-[10px] text-muted-foreground flex items-center gap-1.5 pt-1">
-              <Navigation className="w-3 h-3 text-rose-500 shrink-0" />
-              <span className="truncate">{activeRoute.instructions[0].text}</span>
-            </div>
-          )}
         </div>
       )}
     </div>

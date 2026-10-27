@@ -113,6 +113,71 @@ export async function calculateRoute(
 }
 
 /**
+ * Calculates both primary and alternative route corridors for safe vs danger route comparison.
+ */
+export async function calculateMultiRoutes(
+  origin: [number, number],
+  destination: [number, number],
+  profile: "foot" | "driving" = "foot"
+): Promise<{ primaryRoute: RouteGeometry; alternativeRoute: RouteGeometry | null } | null> {
+  const primaryRoute = await calculateRoute(origin, destination, profile);
+  if (!primaryRoute) return null;
+
+  try {
+    const midLon = (origin[0] + destination[0]) / 2;
+    const midLat = (origin[1] + destination[1]) / 2;
+    const dx = destination[0] - origin[0];
+    const dy = destination[1] - origin[1];
+
+    // Orthogonal offset waypoint to force alternate route calculation
+    const altMidLon = midLon - dy * 0.35;
+    const altMidLat = midLat + dx * 0.35;
+
+    const altUrl = `https://router.project-osrm.org/route/v1/${profile}/${origin[0]},${origin[1]};${altMidLon.toFixed(5)},${altMidLat.toFixed(5)};${destination[0]},${destination[1]}?overview=full&geometries=geojson&steps=true`;
+
+    const altRes = await fetch(altUrl, { headers: { Accept: "application/json" } });
+    if (altRes.ok) {
+      const altData = await altRes.json();
+      if (altData.routes && altData.routes[0]) {
+        const altR = altData.routes[0];
+        const altInstructions: NavigationInstruction[] = [];
+        if (altR.legs) {
+          for (const leg of altR.legs) {
+            if (leg.steps) {
+              for (const step of leg.steps) {
+                const text = step.maneuver?.modifier
+                  ? `${step.maneuver.type} ${step.maneuver.modifier} onto ${step.name || "path"}`
+                  : step.name
+                  ? `Head along ${step.name}`
+                  : "Continue forward";
+                altInstructions.push({
+                  text,
+                  distance_meters: Math.round(step.distance),
+                  duration_seconds: Math.round(step.duration)
+                });
+              }
+            }
+          }
+        }
+
+        const alternativeRoute: RouteGeometry = {
+          coordinates: altR.geometry.coordinates,
+          distance_meters: Math.round(altR.distance),
+          duration_seconds: Math.round(altR.duration),
+          instructions: altInstructions.length > 0 ? altInstructions : primaryRoute.instructions
+        };
+
+        return { primaryRoute, alternativeRoute };
+      }
+    }
+  } catch (err) {
+    console.warn("Could not calculate alternative route:", err);
+  }
+
+  return { primaryRoute, alternativeRoute: null };
+}
+
+/**
  * Standard Haversine distance in meters between two lat/lon points.
  */
 export function calculateHaversineDistance(

@@ -96,7 +96,23 @@ export interface AssistanceResource {
 }
 
 export interface RouteGeometry {
+  id?: string;
+  name?: string;
+  is_safest?: boolean;
+  is_danger?: boolean;
+  risk_warning?: string;
   coordinates: [number, number][]; // [longitude, latitude] pairs
+  distance_meters: number;
+  duration_seconds: number;
+  instructions: NavigationInstruction[];
+  safety_score?: RouteSafetyAssessment;
+}
+
+export interface MultiRouteResponse {
+  safestRoute: RouteGeometry;
+  dangerRoute?: RouteGeometry | null;
+  // Backward compatibility fields matching safestRoute
+  coordinates: [number, number][];
   distance_meters: number;
   duration_seconds: number;
   instructions: NavigationInstruction[];
